@@ -1,11 +1,29 @@
 package executor
 
 import (
+	"encoding/json"
+	"sort"
 	"strings"
 
+	qoderauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/qoder"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	"github.com/tidwall/gjson"
 )
+
+var qoderStandardContextSizes = []string{"200K", "400K", "1M"}
+
+var qoderThinkingOrder = []string{"low", "medium", "high", "max", "xhigh"}
+
+// QoderCatalogModel is the management-facing row for per-model Qoder defaults.
+type QoderCatalogModel struct {
+	Key            string   `json:"key"`
+	DisplayName    string   `json:"display_name,omitempty"`
+	ThinkingLevels []string `json:"thinking_levels,omitempty"`
+	ZeroAllowed    bool     `json:"zero_allowed,omitempty"`
+	ContextSizes   []string `json:"context_sizes,omitempty"`
+	CatalogContext string   `json:"catalog_context,omitempty"`
+}
 
 func parseQoderModelRequest(raw string) (key, thinkingSuffix, contextSize string) {
 	raw = strings.TrimSpace(raw)
@@ -167,4 +185,151 @@ func qoderChatContextModelConfig(reqBody map[string]interface{}) map[string]inte
 
 func isQoderAuthExpiredMessage(message string) bool {
 	return strings.Contains(message, `"code":"105"`) || strings.Contains(message, "Login expired")
+}
+
+// CollectQoderCatalog builds management catalog rows from a PAT/OAuth model cache.
+func CollectQoderCatalog(storage *qoderauth.QoderTokenStorage) []QoderCatalogModel {
+	if storage == nil {
+		return nil
+	}
+	keys := storage.ModelConfigKeys()
+	sort.Strings(keys)
+	out := make([]QoderCatalogModel, 0, len(keys))
+	for _, key := range keys {
+		raw, ok := storage.GetModelConfig(key)
+		if !ok || len(raw) == 0 {
+			continue
+		}
+		if model, ok := ParseQoderCatalogEntry(raw); ok {
+			out = append(out, model)
+		}
+	}
+	return out
+}
+
+// FallbackQoderCatalog returns the static ModelMap keys with standard context sizes
+// so the management UI can still set defaults before a live model list is cached.
+func FallbackQoderCatalog() []QoderCatalogModel {
+	keys := make([]string, 0, len(qoderauth.ModelMap))
+	for key := range qoderauth.ModelMap {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]QoderCatalogModel, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, QoderCatalogModel{
+			Key:            key,
+			DisplayName:    key,
+			ThinkingLevels: append([]string{}, qoderThinkingOrder...),
+			ZeroAllowed:    true,
+			ContextSizes:   append([]string{}, qoderStandardContextSizes...),
+		})
+	}
+	return out
+}
+
+// ParseQoderCatalogEntry reads thinking/context options from a cached model_config blob.
+func ParseQoderCatalogEntry(raw json.RawMessage) (QoderCatalogModel, bool) {
+	key := strings.TrimSpace(gjson.GetBytes(raw, "key").String())
+	if key == "" {
+		return QoderCatalogModel{}, false
+	}
+	display := strings.TrimSpace(gjson.GetBytes(raw, "display_name").String())
+	if display == "" {
+		display = key
+	}
+	sizes, catalogDefault := parseQoderContextConfig(gjson.GetBytes(raw, "context_config"))
+	levels, zeroAllowed := parseQoderThinkingConfig(gjson.GetBytes(raw, "thinking_config"))
+	return QoderCatalogModel{
+		Key:            key,
+		DisplayName:    display,
+		ThinkingLevels: levels,
+		ZeroAllowed:    zeroAllowed,
+		ContextSizes:   sizes,
+		CatalogContext: catalogDefault,
+	}, true
+}
+
+func parseQoderContextConfig(cc gjson.Result) (sizes []string, catalogDefault string) {
+	found := make(map[string]struct{}, len(qoderStandardContextSizes)+4)
+	if cc.Exists() && cc.IsObject() {
+		cc.ForEach(func(k, v gjson.Result) bool {
+			label := normalizeQoderContextLabel(k.String())
+			if label == "" {
+				return true
+			}
+			found[label] = struct{}{}
+			if v.Get("is_default").Bool() && catalogDefault == "" {
+				catalogDefault = label
+			}
+			return true
+		})
+	}
+	for _, size := range qoderStandardContextSizes {
+		found[size] = struct{}{}
+	}
+	sizes = make([]string, 0, len(found))
+	for _, size := range qoderStandardContextSizes {
+		if _, ok := found[size]; ok {
+			sizes = append(sizes, size)
+			delete(found, size)
+		}
+	}
+	if len(found) == 0 {
+		return sizes, catalogDefault
+	}
+	extra := make([]string, 0, len(found))
+	for size := range found {
+		extra = append(extra, size)
+	}
+	sort.Strings(extra)
+	return append(sizes, extra...), catalogDefault
+}
+
+func parseQoderThinkingConfig(tc gjson.Result) (levels []string, zeroAllowed bool) {
+	if !tc.Exists() {
+		return nil, false
+	}
+	if tc.Get("disabled").Exists() {
+		zeroAllowed = true
+	}
+	efforts := tc.Get("enabled.efforts")
+	found := map[string]struct{}{}
+	if efforts.Exists() && efforts.IsObject() {
+		efforts.ForEach(func(k, _ gjson.Result) bool {
+			level := strings.ToLower(strings.TrimSpace(k.String()))
+			if level != "" {
+				found[level] = struct{}{}
+			}
+			return true
+		})
+	}
+	for _, level := range qoderThinkingOrder {
+		if _, ok := found[level]; ok {
+			levels = append(levels, level)
+			delete(found, level)
+		}
+	}
+	if len(found) == 0 {
+		return levels, zeroAllowed
+	}
+	extra := make([]string, 0, len(found))
+	for level := range found {
+		extra = append(extra, level)
+	}
+	sort.Strings(extra)
+	return append(levels, extra...), zeroAllowed
+}
+
+func normalizeQoderContextLabel(raw string) string {
+	switch strings.ToUpper(strings.TrimSpace(raw)) {
+	case "200K", "200000":
+		return "200K"
+	case "400K", "400000":
+		return "400K"
+	case "1M", "1000000":
+		return "1M"
+	default:
+		return strings.TrimSpace(raw)
+	}
 }

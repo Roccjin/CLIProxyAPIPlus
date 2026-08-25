@@ -211,6 +211,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.POST("/qoder-pat", s.mgmt.RequestQoderPAT)
 		mgmt.GET("/qoder-model-defaults", s.mgmt.GetQoderModelDefaults)
 		mgmt.PUT("/qoder-model-defaults", s.mgmt.PutQoderModelDefaults)
+		mgmt.GET("/qoder-models", s.mgmt.GetQoderModels)
 		mgmt.GET("/qoder-quota", s.mgmt.GetQoderQuota)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 		mgmt.DELETE("/oauth-session", s.mgmt.CancelAuthSession)

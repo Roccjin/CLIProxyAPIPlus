@@ -2,8 +2,10 @@ package executor
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
+	qoderauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/qoder"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
@@ -117,4 +119,88 @@ func TestQoderContextTokensJSONRoundTrip(t *testing.T) {
 	if string(raw) != `{"n":1000000}` {
 		t.Fatalf("json = %s", raw)
 	}
+}
+
+func TestResolveQoderContextTokens_DefaultWhenRequestOmits(t *testing.T) {
+	if got := resolveQoderContextTokens(map[string]interface{}{}, "", "1M"); got != 1000000 {
+		t.Fatalf("configured default = %d, want 1000000", got)
+	}
+	if got := resolveQoderContextTokens(map[string]interface{}{"context_size": "400K"}, "", "1M"); got != 400000 {
+		t.Fatalf("request context_size should win, got %d", got)
+	}
+	if got := resolveQoderContextTokens(map[string]interface{}{}, "1M", "400K"); got != 1000000 {
+		t.Fatalf("suffix should win, got %d", got)
+	}
+	if got := resolveQoderContextTokens(map[string]interface{}{}, "", ""); got != 0 {
+		t.Fatalf("empty should omit context_length, got %d", got)
+	}
+}
+
+func TestParseQoderCatalogEntry_ContextConfigDefault(t *testing.T) {
+	raw := json.RawMessage(`{
+		"key": "dfmodel",
+		"display_name": "DeepSeek-V4-Flash",
+		"thinking_config": {
+			"disabled": {},
+			"enabled": {"efforts": {"max": {}, "high": {}}}
+		},
+		"context_config": {
+			"1M": {"token_count": 1000000},
+			"200K": {"is_default": true, "token_count": 200000},
+			"400K": {"token_count": 400000}
+		}
+	}`)
+	model, ok := ParseQoderCatalogEntry(raw)
+	if !ok {
+		t.Fatal("expected catalog entry")
+	}
+	if model.Key != "dfmodel" || model.DisplayName != "DeepSeek-V4-Flash" {
+		t.Fatalf("identity = %+v", model)
+	}
+	if model.CatalogContext != "200K" {
+		t.Fatalf("catalog_context = %q, want 200K", model.CatalogContext)
+	}
+	if stringsJoin(model.ContextSizes) != "200K,400K,1M" {
+		t.Fatalf("context_sizes = %v", model.ContextSizes)
+	}
+	if stringsJoin(model.ThinkingLevels) != "high,max" {
+		t.Fatalf("thinking_levels = %v", model.ThinkingLevels)
+	}
+	if !model.ZeroAllowed {
+		t.Fatal("zero_allowed")
+	}
+}
+
+func TestCollectQoderCatalog_FromCachedModelConfig(t *testing.T) {
+	storage := &qoderauth.QoderTokenStorage{}
+	storage.SetModelConfigs(map[string]json.RawMessage{
+		"dfmodel": json.RawMessage(`{"key":"dfmodel","display_name":"Flash","context_config":{"200K":{"is_default":true,"token_count":200000}}}`),
+	})
+	models := CollectQoderCatalog(storage)
+	if len(models) != 1 || models[0].Key != "dfmodel" || models[0].CatalogContext != "200K" {
+		t.Fatalf("catalog = %#v", models)
+	}
+}
+
+func TestFallbackQoderCatalogIncludesFrontierKeys(t *testing.T) {
+	models := FallbackQoderCatalog()
+	found := map[string]bool{}
+	for _, model := range models {
+		found[model.Key] = true
+		if len(model.ContextSizes) == 0 {
+			t.Fatalf("%s missing context sizes", model.Key)
+		}
+		if len(model.ThinkingLevels) == 0 {
+			t.Fatalf("%s missing thinking levels", model.Key)
+		}
+	}
+	for _, key := range []string{"dfmodel", "dmodel", "ultimate"} {
+		if !found[key] {
+			t.Fatalf("missing %s", key)
+		}
+	}
+}
+
+func stringsJoin(values []string) string {
+	return strings.Join(values, ",")
 }

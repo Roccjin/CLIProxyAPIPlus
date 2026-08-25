@@ -130,7 +130,8 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 
 	// Start with the model's maximum output tokens, then clamp to
 	// any user-requested limit so callers can cap cost/latency/UI.
-	maxTokens := 32768
+	// Official qodercli uses 32000 when /model/list leaves max_output_tokens unset.
+	maxTokens := 32000
 	if maxOutputTokens > 0 {
 		maxTokens = int(maxOutputTokens)
 	}
@@ -239,16 +240,39 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 	// validation on the Qoder upstream and causes 403 Signature invalid.
 	httpReq.Header.Set("Accept-Encoding", "identity")
 
+	var authID, authLabel, authType, authValue string
+	if authRecord != nil {
+		authID = authRecord.ID
+		authLabel = authRecord.Label
+		authType, authValue = authRecord.AccountInfo()
+	}
+	// Log the plaintext JSON, not the WAF-encoded wire body, so request-log
+	// can show parameters.reasoning_effort / context_length / model_config.
+	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+		URL:       qoderauth.QoderChatURLEncoded,
+		Method:    http.MethodPost,
+		Headers:   httpReq.Header.Clone(),
+		Body:      bodyBytes,
+		Provider:  e.Identifier(),
+		AuthID:    authID,
+		AuthLabel: authLabel,
+		AuthType:  authType,
+		AuthValue: authValue,
+	})
+
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, authRecord, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
 	httpResp, err := httpClient.Do(httpReq)
 	if err != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
+	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
 
 	if httpResp.StatusCode != http.StatusOK {
 		defer func() { _ = httpResp.Body.Close() }()
 		body, _ := io.ReadAll(httpResp.Body)
+		helps.AppendAPIResponseChunk(ctx, e.cfg, body)
 		allow := httpResp.Header.Get("Allow")
 		server := httpResp.Header.Get("Server")
 		bodyPreview := truncate(string(body), 500)
@@ -281,6 +305,7 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 
 		for scanner.Scan() {
 			line := scanner.Bytes()
+			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 			if len(line) == 0 {
 				continue
 			}
@@ -379,6 +404,7 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 		emitDone(ctx, out, opts.SourceFormat, req.Model, opts.OriginalRequest, payload, &streamParam)
 		// Check for scanner errors
 		if err := scanner.Err(); err != nil {
+			helps.RecordAPIResponseError(ctx, e.cfg, err)
 			streamErr := fmt.Errorf("scanner error: %w", err)
 			reporter.PublishFailure(ctx, streamErr)
 			out <- cliproxyexecutor.StreamChunk{Err: streamErr}
