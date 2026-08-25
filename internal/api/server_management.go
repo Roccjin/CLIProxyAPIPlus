@@ -207,6 +207,11 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/cursor-auth-url", s.mgmt.RequestCursorToken)
 		mgmt.GET("/github-auth-url", s.mgmt.RequestGitHubToken)
 		mgmt.GET("/qoder-auth-url", s.mgmt.RequestQoderToken)
+		mgmt.POST("/qoder-auth-url", s.mgmt.RequestQoderPAT)
+		mgmt.POST("/qoder-pat", s.mgmt.RequestQoderPAT)
+		mgmt.GET("/qoder-model-defaults", s.mgmt.GetQoderModelDefaults)
+		mgmt.PUT("/qoder-model-defaults", s.mgmt.PutQoderModelDefaults)
+		mgmt.GET("/qoder-quota", s.mgmt.GetQoderQuota)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 		mgmt.DELETE("/oauth-session", s.mgmt.CancelAuthSession)
 	}

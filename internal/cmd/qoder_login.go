@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
@@ -25,7 +26,7 @@ func DoQoderLogin(cfg *config.Config, options *LoginOptions) {
 	manager := newAuthManager()
 
 	promptFn := options.Prompt
-	if promptFn == nil {
+	if promptFn == nil && !options.QoderOAuth && strings.TrimSpace(options.QoderPAT) == "" {
 		promptFn = func(prompt string) (string, error) {
 			fmt.Println()
 			fmt.Println(prompt)
@@ -35,10 +36,18 @@ func DoQoderLogin(cfg *config.Config, options *LoginOptions) {
 		}
 	}
 
+	metadata := map[string]string{}
+	if options != nil && options.QoderOAuth {
+		metadata["oauth"] = "1"
+	}
+	if options != nil && strings.TrimSpace(options.QoderPAT) != "" {
+		metadata["pat"] = strings.TrimSpace(options.QoderPAT)
+	}
+
 	authOpts := &sdkAuth.LoginOptions{
 		NoBrowser:    options.NoBrowser,
 		CallbackPort: options.CallbackPort,
-		Metadata:     map[string]string{},
+		Metadata:     metadata,
 		Prompt:       promptFn,
 	}
 

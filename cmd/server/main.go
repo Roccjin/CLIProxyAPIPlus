@@ -106,6 +106,7 @@ type commandModeOptions struct {
 	kiroIDCLogin       bool
 	xaiLogin           bool
 	qoderLogin         bool
+	qoderOAuth         bool
 }
 
 func isOneShotCommandMode(opts commandModeOptions) bool {
@@ -132,7 +133,8 @@ func isOneShotCommandMode(opts commandModeOptions) bool {
 		opts.kiroImport ||
 		opts.kiroIDCLogin ||
 		opts.xaiLogin ||
-		opts.qoderLogin
+		opts.qoderLogin ||
+		opts.qoderOAuth
 }
 
 // main is the entry point of the application.
@@ -169,6 +171,8 @@ func main() {
 	var codeBuddyLogin bool
 	var xaiLogin bool
 	var qoderLogin bool
+	var qoderOAuth bool
+	var qoderPAT string
 	var projectID string
 	var vertexImport string
 	var vertexImportPrefix string
@@ -211,7 +215,9 @@ func main() {
 	flag.BoolVar(&githubCopilotLogin, "github-copilot-login", false, "Login to GitHub Copilot using device flow")
 	flag.BoolVar(&codeBuddyLogin, "codebuddy-login", false, "Login to CodeBuddy using browser OAuth flow")
 	flag.BoolVar(&xaiLogin, "xai-login", false, "Login to xAI using OAuth")
-	flag.BoolVar(&qoderLogin, "qoder-login", false, "Login to Qoder using OAuth device flow")
+	flag.BoolVar(&qoderLogin, "qoder-login", false, "Login to Qoder using a personal access token (pt-)")
+	flag.BoolVar(&qoderOAuth, "qoder-oauth", false, "Login to Qoder using the legacy OAuth device flow")
+	flag.StringVar(&qoderPAT, "qoder-pat", "", "Qoder PAT (pt-...); used with --qoder-login")
 	flag.StringVar(&projectID, "project_id", "", "Project ID (Gemini only, not required)")
 	flag.StringVar(&configPath, "config", DefaultConfigPath, "Configure File Path")
 	flag.StringVar(&vertexImport, "vertex-import", "", "Import Vertex service account key JSON file")
@@ -700,6 +706,8 @@ func main() {
 	options := &cmd.LoginOptions{
 		NoBrowser:    noBrowser,
 		CallbackPort: oauthCallbackPort,
+		QoderOAuth:   qoderOAuth,
+		QoderPAT:     qoderPAT,
 	}
 
 	commandMode := isOneShotCommandMode(commandModeOptions{
@@ -727,6 +735,7 @@ func main() {
 		kiroIDCLogin:       kiroIDCLogin,
 		xaiLogin:           xaiLogin,
 		qoderLogin:         qoderLogin,
+		qoderOAuth:         qoderOAuth,
 	})
 	cloudConfigMissing := isCloudDeploy && !configFileExists
 	homeMode := configLoadedFromHome || (cfg != nil && cfg.Home.Enabled)
@@ -880,7 +889,7 @@ func main() {
 		cmd.DoKiroIDCLogin(cfg, options, kiroIDCStartURL, kiroIDCRegion, kiroIDCFlow)
 	} else if xaiLogin {
 		cmd.DoXAILogin(cfg, options)
-	} else if qoderLogin {
+	} else if qoderLogin || qoderOAuth {
 		cmd.DoQoderLogin(cfg, options)
 	} else {
 		// In cloud deploy mode without config file, just wait for shutdown signals

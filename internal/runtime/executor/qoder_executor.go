@@ -52,17 +52,22 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 		return nil, fmt.Errorf("invalid auth storage type for qoder: %T", authRecord.Storage)
 	}
 
-	// Note: Qoder device tokens are long-lived (~30 days) and the upstream
-	// /algo/api/v3/user/refresh_token endpoint returns 403 for them — see
-	// QoderExecutor.Refresh's no-op rationale. We deliberately do not call
-	// RefreshTokenIfNeeded per request: it would just produce a 403 in the
-	// log on every chat call. Token expiry is handled by the user re-running
-	// --qoder-login.
+	if storage.IsPAT() {
+		_ = qoderauth.RefreshTokenIfNeeded(ctx, e.cfg, storage, 600, qoderAuthFilePath(authRecord))
+	}
 
 	// Translate non-openai formats to chat completions before extracting messages
 	payload := req.Payload
+	fromFormat := opts.SourceFormat
+	if fromFormat == "" {
+		fromFormat = sdktranslator.FormatOpenAI
+	}
 	if opts.SourceFormat != "" && opts.SourceFormat != sdktranslator.FormatOpenAI {
 		payload = sdktranslator.TranslateRequest(opts.SourceFormat, sdktranslator.FormatOpenAI, req.Model, payload, false)
+	}
+	payload, err = helps.ApplyRequestThinking(payload, req, opts, fromFormat.String(), sdktranslator.FormatOpenAI.String(), e.Identifier())
+	if err != nil {
+		return nil, err
 	}
 
 	// Parse request to get model and messages
@@ -97,6 +102,17 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 	modelConfig, err := buildQoderModelConfig(storage, qoderModel)
 	if err != nil {
 		return nil, err
+	}
+
+	defaultThinking, defaultContext := lookupQoderModelDefault(e.cfg, qoderModel)
+	_, thinkingSuffix, contextSuffix := parseQoderModelRequest(model)
+	enableThinking, thinkingEffort := resolveQoderThinking(chatReq, thinkingSuffix, defaultThinking)
+	contextTokens := resolveQoderContextTokens(chatReq, contextSuffix, defaultContext)
+	if contextTokens > 0 {
+		modelConfig["max_input_tokens"] = float64(contextTokens)
+	}
+	if enableThinking != nil {
+		modelConfig["is_reasoning"] = *enableThinking
 	}
 
 	isReasoning, _ := modelConfig["is_reasoning"].(bool)
@@ -179,6 +195,7 @@ func (e *QoderExecutor) ExecuteStream(ctx context.Context, authRecord *cliproxya
 	if toolsRaw != nil {
 		reqBody["tools"] = toolsRaw
 	}
+	applyQoderRuntimeKnobs(reqBody, modelConfig, enableThinking, thinkingEffort, contextTokens)
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
@@ -521,6 +538,9 @@ type qoderStatusError struct {
 }
 
 func newQoderStatusError(status int, message string) *qoderStatusError {
+	if isQoderAuthExpiredMessage(message) {
+		status = http.StatusUnauthorized
+	}
 	return &qoderStatusError{status: status, message: message}
 }
 
@@ -730,25 +750,35 @@ func (e *QoderExecutor) Execute(ctx context.Context, authRecord *cliproxyauth.Au
 	}, nil
 }
 
-// Refresh is a no-op for Qoder.
-//
-// Qoder's device-flow token (the "dt-..." string) is already long-lived
-// (~30 days for the access token, ~360 days for the refresh token per
-// the deviceToken/poll response). The upstream does not expose the
-// classic OAuth refresh dance — every endpoint we've observed (cubk1's
-// qoder2api, Veria, the official @qoder-ai/qodercli) either skips
-// refresh entirely or routes through a different /jobToken exchange
-// flow that requires personalToken (we don't have one).
-//
-// Hitting /algo/api/v3/user/refresh_token with our device token returns
-// 403 "Forbidden" / errorCode=Forbidden — the endpoint is not for our
-// flow. Mark the auth refreshed-now and keep going; if a real expiry
-// happens the user re-runs --qoder-login.
+// Refresh rebuilds a PAT COSY session via jobToken. OAuth device tokens
+// still have no working refresh path (dt- against /refresh_token returns 403).
 func (e *QoderExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
 	if auth == nil {
 		return nil, fmt.Errorf("qoder executor: auth is nil")
 	}
+	storage, ok := auth.Storage.(*qoderauth.QoderTokenStorage)
+	if !ok || storage == nil {
+		return auth, nil
+	}
+	if !storage.IsPAT() {
+		return auth, nil
+	}
+	if err := qoderauth.RefreshPATSession(ctx, e.cfg, storage, qoderAuthFilePath(auth)); err != nil {
+		return nil, err
+	}
 	return auth, nil
+}
+
+func qoderAuthFilePath(auth *cliproxyauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if auth.Attributes != nil {
+		if p := strings.TrimSpace(auth.Attributes["path"]); p != "" {
+			return p
+		}
+	}
+	return ""
 }
 
 // HttpRequest injects Qoder COSY authentication into the HTTP request and executes it
@@ -919,6 +949,9 @@ func FetchQoderModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 		if isVL {
 			mi.SupportedInputModalities = []string{"TEXT", "IMAGE"}
 		}
+		if cc := entry.Get("context_config"); cc.Exists() && cc.Raw != "" {
+			mi.ContextConfig = json.RawMessage(cc.Raw)
+		}
 		// Parse thinking_config from upstream. Qoder returns per-model
 		// effort levels (e.g. dmodel has only high/max, ultimate has
 		// low/medium/high/max/xhigh) and a disabled key to indicate
@@ -1018,18 +1051,35 @@ func truncate(s string, n int) string {
 // without a separate round-trip.
 func FetchQoderUsage(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) *qoderauth.QoderUsageInfo {
 	storage, ok := auth.Storage.(*qoderauth.QoderTokenStorage)
-	if !ok || storage == nil || storage.Token == "" {
+	if !ok || storage == nil {
+		return nil
+	}
+	bearer := strings.TrimSpace(storage.Token)
+	if storage.IsPAT() {
+		bearer = strings.TrimSpace(storage.OpenAPIJobToken)
+		if bearer == "" && strings.TrimSpace(storage.PersonalToken) != "" {
+			authSvc := qoderauth.NewQoderAuth(cfg)
+			jt, errEx := authSvc.ExchangeOpenAPIJobToken(ctx, storage.PersonalToken)
+			if errEx != nil {
+				log.Debugf("qoder: openapi jobToken exchange for usage failed: %v", errEx)
+				return nil
+			}
+			storage.OpenAPIJobToken = jt
+			bearer = jt
+		}
+	}
+	if bearer == "" {
 		return nil
 	}
 
-	const usageURL = "https://openapi.qoder.sh/api/v2/quota/usage"
-	log.Debugf("qoder: fetching usage for user %s (token len=%d)", storage.UserID, len(storage.Token))
+	usageURL := "https://openapi.qoder.sh/api/v2/quota/usage"
+	log.Debugf("qoder: fetching usage for user %s (token len=%d)", storage.UserID, len(bearer))
 	req, err := http.NewRequest(http.MethodGet, usageURL, nil)
 	if err != nil {
 		log.Debugf("qoder: build usage request: %v", err)
 		return nil
 	}
-	req.Header.Set("Authorization", "Bearer "+storage.Token)
+	req.Header.Set("Authorization", "Bearer "+bearer)
 	req.Header.Set("Accept", "application/json")
 
 	httpClient := helps.NewProxyAwareHTTPClient(ctx, cfg, auth, 15*time.Second)
@@ -1065,7 +1115,7 @@ func FetchQoderUsage(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.C
 }
 
 func validateQoderModel(rawModel string, storage *qoderauth.QoderTokenStorage) (string, error) {
-	qoderModel := strings.TrimPrefix(rawModel, "qoder/")
+	qoderModel, _, _ := parseQoderModelRequest(rawModel)
 	if mapped, ok := qoderauth.ModelMap[qoderModel]; ok {
 		return mapped, nil
 	}

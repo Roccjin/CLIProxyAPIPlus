@@ -8,6 +8,18 @@ import (
 	"time"
 )
 
+func TestExpirationTimeFromExpireTime(t *testing.T) {
+	ms := time.Now().Add(24 * time.Hour).UnixMilli()
+	auth := &Auth{Metadata: map[string]any{"expire_time": float64(ms)}}
+	got, ok := auth.ExpirationTime()
+	if !ok {
+		t.Fatal("ExpirationTime() missing expire_time")
+	}
+	if got.UnixMilli() != ms {
+		t.Fatalf("ExpirationTime() = %d, want %d", got.UnixMilli(), ms)
+	}
+}
+
 func TestRequestRetryOverride(t *testing.T) {
 	var unset *Auth
 	if got, ok := unset.RequestRetryOverride(); ok || got != 0 {

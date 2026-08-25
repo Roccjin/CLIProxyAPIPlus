@@ -2,23 +2,43 @@
 package qoder
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 )
 
+const (
+	// AuthModePAT is a personal-access-token credential that can rebuild
+	// the COSY session via /algo/api/v3/user/jobToken.
+	AuthModePAT = "pat"
+	// AuthModeOAuth is a legacy device-flow credential (dt- tokens).
+	AuthModeOAuth = "oauth"
+)
+
 // QoderTokenStorage stores OAuth2 token information for Qoder API authentication.
 // It maintains compatibility with the existing auth system while adding Qoder-specific fields.
 type QoderTokenStorage struct {
-	// Token is the OAuth2 access token used for authenticating API requests.
+	// Token is the session token used for COSY authentication (jt-/securityOauthToken
+	// for PAT accounts, dt- device token for OAuth accounts).
 	Token string `json:"token"`
 	// RefreshToken is used to obtain new access tokens when the current one expires.
 	RefreshToken string `json:"refresh_token"`
+	// PersonalToken is the long-lived PAT (pt-...). Only set for auth_mode=pat.
+	// Never sent as the COSY AuthToken; used only to exchange/refresh job tokens.
+	PersonalToken string `json:"personal_token,omitempty"`
+	// AuthMode is "pat" or "oauth". Empty is treated as oauth for legacy files.
+	AuthMode string `json:"auth_mode,omitempty"`
+	// OpenAPIJobToken caches the jt- token from openapi /api/v1/jobToken/exchange
+	// used as Bearer for /api/v2/quota/usage. Distinct from Token (COSY session).
+	OpenAPIJobToken string `json:"openapi_job_token,omitempty"`
 	// UserID is the unique identifier for the Qoder user.
 	UserID string `json:"user_id"`
 	// Name is the user's display name.
@@ -172,7 +192,6 @@ func (ts *QoderTokenStorage) ModelConfigKeys() []string {
 // Returns:
 //   - error: An error if the operation fails, nil otherwise
 func (ts *QoderTokenStorage) SaveTokenToFile(authFilePath string) error {
-	misc.LogSavingCredentials(authFilePath)
 	ts.Type = "qoder"
 
 	if err := os.MkdirAll(filepath.Dir(authFilePath), 0700); err != nil {
@@ -183,6 +202,19 @@ func (ts *QoderTokenStorage) SaveTokenToFile(authFilePath string) error {
 	if errMerge != nil {
 		return fmt.Errorf("failed to merge metadata: %w", errMerge)
 	}
+
+	payload, errMarshal := json.Marshal(data)
+	if errMarshal != nil {
+		return fmt.Errorf("failed to marshal token: %w", errMarshal)
+	}
+	// json.Encoder.Encode appends a newline; keep the on-disk shape stable.
+	payload = append(payload, '\n')
+
+	if qoderAuthFileUnchanged(authFilePath, payload) {
+		return nil
+	}
+
+	misc.LogSavingCredentials(authFilePath)
 
 	// Write to a temp file and atomically rename onto the target path.
 	// os.Create + Encode leaves a TOCTOU window where the file watcher
@@ -202,7 +234,7 @@ func (ts *QoderTokenStorage) SaveTokenToFile(authFilePath string) error {
 		}
 	}()
 
-	if err = json.NewEncoder(tmp).Encode(data); err != nil {
+	if _, err = tmp.Write(payload); err != nil {
 		return fmt.Errorf("failed to write token to temp file: %w", err)
 	}
 	if err = tmp.Close(); err != nil {
@@ -216,6 +248,21 @@ func (ts *QoderTokenStorage) SaveTokenToFile(authFilePath string) error {
 	return nil
 }
 
+func qoderAuthFileUnchanged(path string, payload []byte) bool {
+	if strings.TrimSpace(path) == "" || len(bytes.TrimSpace(payload)) == 0 {
+		return false
+	}
+	current, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var left, right any
+	if json.Unmarshal(current, &left) != nil || json.Unmarshal(payload, &right) != nil {
+		return false
+	}
+	return reflect.DeepEqual(left, right)
+}
+
 // IsExpired checks if the token has expired or will expire within the given duration
 func (ts *QoderTokenStorage) IsExpired(bufferDuration int64) bool {
 	if ts.ExpireTime == 0 {
@@ -223,4 +270,27 @@ func (ts *QoderTokenStorage) IsExpired(bufferDuration int64) bool {
 	}
 	now := time.Now().UnixMilli()
 	return ts.ExpireTime-now-bufferDuration <= 0
+}
+
+// IsPAT reports whether this credential is a personal-access-token account.
+func (ts *QoderTokenStorage) IsPAT() bool {
+	if ts == nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(ts.AuthMode), AuthModePAT) {
+		return true
+	}
+	return strings.TrimSpace(ts.PersonalToken) != ""
+}
+
+// MaskPAT returns a log-safe PAT preview.
+func MaskPAT(pat string) string {
+	pat = strings.TrimSpace(pat)
+	if pat == "" {
+		return ""
+	}
+	if len(pat) <= 8 {
+		return pat[:2] + "****"
+	}
+	return pat[:3] + "****" + pat[len(pat)-4:]
 }

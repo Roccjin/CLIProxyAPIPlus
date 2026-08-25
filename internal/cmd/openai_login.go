@@ -24,6 +24,12 @@ type LoginOptions struct {
 
 	// Prompt allows the caller to provide interactive input when needed.
 	Prompt func(prompt string) (string, error)
+
+	// QoderOAuth forces the legacy Qoder device-flow login instead of PAT.
+	QoderOAuth bool
+
+	// QoderPAT is an optional Qoder personal access token (pt-...).
+	QoderPAT string
 }
 
 // DoCodexLogin triggers the Codex OAuth flow through the shared authentication manager.

@@ -315,6 +315,13 @@ type OAuthModelAlias struct {
 	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 }
 
+// QoderModelDefault is the per-model thinking/context fallback used when a
+// client request does not set reasoning_effort / context_size.
+type QoderModelDefault struct {
+	Thinking string `yaml:"thinking,omitempty" json:"thinking,omitempty"`
+	Context  string `yaml:"context,omitempty" json:"context,omitempty"`
+}
+
 // PayloadConfig defines default and override parameter rules applied to provider payloads.
 type PayloadConfig struct {
 	// Default defines rules that only set parameters when they are missing in the payload.

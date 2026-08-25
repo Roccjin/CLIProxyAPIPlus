@@ -5,6 +5,7 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -71,6 +72,10 @@ type ModelInfo struct {
 	// Thinking holds provider-specific reasoning/thinking budget capabilities.
 	// This is optional and currently used for Gemini thinking budget normalization.
 	Thinking *ThinkingSupport `json:"thinking,omitempty"`
+
+	// ContextConfig is the raw upstream Qoder context_config object (size
+	// labels → token_count). Omitted for non-Qoder models.
+	ContextConfig json.RawMessage `json:"context_config,omitempty"`
 
 	// Config holds model-specific runtime overrides loaded from models.json.
 	Config *ModelConfig `json:"config,omitempty"`
@@ -614,6 +619,9 @@ func cloneModelInfo(model *ModelInfo) *ModelInfo {
 			}
 		}
 		copyModel.Config = &copyConfig
+	}
+	if len(model.ContextConfig) > 0 {
+		copyModel.ContextConfig = append(json.RawMessage(nil), model.ContextConfig...)
 	}
 	return &copyModel
 }

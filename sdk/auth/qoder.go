@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -26,13 +27,10 @@ func (a *QoderAuthenticator) Provider() string {
 }
 
 func (a *QoderAuthenticator) RefreshLead() *time.Duration {
-	// Qoder device tokens are long-lived (~30 days), and we don't have
-	// a working refresh path (see QoderExecutor.Refresh comment). Use a
-	// short non-zero lead so the auto-refresh loop still revisits the
-	// auth periodically — but never within the same minute it just ran.
-	// Returning nil disables scheduled refresh entirely; we keep a
-	// nominal 24h lead so admins can observe through the management API.
-	d := 24 * time.Hour
+	// PAT sessions can be rebuilt via jobToken; revisit hourly so expiry
+	// is handled without waiting for a 401. OAuth (dt-) Refresh is a no-op
+	// so the extra ticks are cheap.
+	d := time.Hour
 	return &d
 }
 
@@ -45,6 +43,10 @@ func (a *QoderAuthenticator) Login(ctx context.Context, cfg *config.Config, opts
 	}
 	if opts == nil {
 		opts = &LoginOptions{}
+	}
+
+	if !qoderLoginWantsOAuth(opts) {
+		return a.loginWithPAT(ctx, cfg, opts)
 	}
 
 	authSvc := qoder.NewQoderAuth(cfg)
@@ -128,6 +130,59 @@ func (a *QoderAuthenticator) Login(ctx context.Context, cfg *config.Config, opts
 		Provider: a.Provider(),
 		FileName: fileName,
 		Storage:  tokenStorage,
+		Metadata: metadata,
+	}, nil
+}
+
+func qoderLoginWantsOAuth(opts *LoginOptions) bool {
+	if opts == nil || opts.Metadata == nil {
+		return false
+	}
+	v := strings.ToLower(strings.TrimSpace(opts.Metadata["oauth"]))
+	return v == "1" || v == "true" || v == "yes"
+}
+
+func (a *QoderAuthenticator) loginWithPAT(ctx context.Context, cfg *config.Config, opts *LoginOptions) (*coreauth.Auth, error) {
+	pat := ""
+	if opts.Metadata != nil {
+		pat = strings.TrimSpace(opts.Metadata["pat"])
+	}
+	if pat == "" {
+		pat = strings.TrimSpace(os.Getenv("QODER_PAT"))
+	}
+	if pat == "" && opts.Prompt != nil {
+		value, err := opts.Prompt("Enter Qoder PAT (pt-...):")
+		if err != nil {
+			return nil, err
+		}
+		pat = strings.TrimSpace(value)
+	}
+	if pat == "" {
+		return nil, fmt.Errorf("qoder: PAT is required (set QODER_PAT or pass --qoder-pat); use --qoder-oauth for device flow")
+	}
+
+	authSvc := qoder.NewQoderAuth(cfg)
+	storage, err := authSvc.LoginWithPAT(ctx, pat)
+	if err != nil {
+		return nil, fmt.Errorf("qoder PAT login failed: %w", err)
+	}
+	fileName := qoder.PATAuthFileName(storage.Email, pat)
+	metadata := map[string]any{
+		"email":     storage.Email,
+		"name":      storage.Name,
+		"user_id":   storage.UserID,
+		"auth_mode": qoder.AuthModePAT,
+	}
+	fmt.Println("Qoder PAT authentication successful")
+	if storage.Name != "" {
+		fmt.Printf("Logged in as %s <%s>\n", storage.Name, storage.Email)
+	}
+	return &coreauth.Auth{
+		ID:       fileName,
+		Provider: a.Provider(),
+		FileName: fileName,
+		Label:    storage.Name,
+		Storage:  storage,
 		Metadata: metadata,
 	}, nil
 }

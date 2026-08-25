@@ -833,6 +833,16 @@ nonstream-keepalive-interval: 0
 #       alias: "qoder-auto"
 #     - name: "qmodel_latest"
 #       alias: "qlatest"
+
+# Per-model Qoder thinking/context fallbacks (applied when the client omits them).
+# Keys are upstream model ids (without the qoder/ prefix).
+# qoder-model-defaults:
+#   ultimate:
+#     thinking: high          # off | low | medium | high | max | xhigh
+#     context: 400K           # 200K | 400K | 1M
+#   dmodel:
+#     thinking: max
+#     context: 1M
 #   sample-provider:                  # plugin provider keys are supported for OAuth plugins
 #     - name: "sample-model-latest"
 #       alias: "sample-latest"

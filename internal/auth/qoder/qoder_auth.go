@@ -131,7 +131,9 @@ type UserInfoResponse struct {
 
 // QoderAuth manages authentication and token handling for the Qoder API
 type QoderAuth struct {
-	httpClient *http.Client
+	httpClient         *http.Client
+	jobTokenURL        string
+	openAPIExchangeURL string
 }
 
 // NewQoderAuth creates a new QoderAuth instance with a proxy-configured HTTP client

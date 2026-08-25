@@ -177,6 +177,10 @@ type Config struct {
 	// gemini-api-key, interactions-api-key, codex-api-key, xai-api-key, claude-api-key, openai-compatibility, and vertex-api-key.
 	OAuthModelAlias map[string][]OAuthModelAlias `yaml:"oauth-model-alias,omitempty" json:"oauth-model-alias,omitempty"`
 
+	// QoderModelDefaults maps upstream Qoder model keys (e.g. "ultimate") to
+	// default thinking effort and context size applied when the client omits them.
+	QoderModelDefaults map[string]QoderModelDefault `yaml:"qoder-model-defaults,omitempty" json:"qoder-model-defaults,omitempty"`
+
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
 

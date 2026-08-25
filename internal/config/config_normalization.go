@@ -122,6 +122,28 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 	cfg.OAuthModelAlias = out
 }
 
+// SanitizeQoderModelDefaults trims keys and drops empty entries.
+func (cfg *Config) SanitizeQoderModelDefaults() {
+	if cfg == nil || len(cfg.QoderModelDefaults) == 0 {
+		return
+	}
+	out := make(map[string]QoderModelDefault, len(cfg.QoderModelDefaults))
+	for rawKey, entry := range cfg.QoderModelDefaults {
+		key := strings.TrimSpace(rawKey)
+		key = strings.TrimPrefix(key, "qoder/")
+		if key == "" {
+			continue
+		}
+		entry.Thinking = strings.TrimSpace(entry.Thinking)
+		entry.Context = strings.TrimSpace(entry.Context)
+		if entry.Thinking == "" && entry.Context == "" {
+			continue
+		}
+		out[key] = entry
+	}
+	cfg.QoderModelDefaults = out
+}
+
 // SanitizeOpenAICompatibility removes OpenAI-compatibility provider entries that are
 // not actionable, specifically those missing a BaseURL. It trims whitespace before
 // evaluation and preserves the relative order of remaining entries.

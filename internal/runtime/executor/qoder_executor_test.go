@@ -1076,6 +1076,21 @@ func TestValidateQoderModel(t *testing.T) {
 			want:     "custom-qoder-model",
 		},
 		{
+			name:     "Thinking suffix stripped",
+			rawModel: "qoder/auto(high)",
+			want:     "auto",
+		},
+		{
+			name:     "Context suffix stripped",
+			rawModel: "qoder/auto[1m]",
+			want:     "auto",
+		},
+		{
+			name:     "Thinking and context suffixes stripped",
+			rawModel: "qoder/auto(high)[1m]",
+			want:     "auto",
+		},
+		{
 			name:         "Unsupported model error",
 			rawModel:     "qoder/nonexistent",
 			wantErr:      true,

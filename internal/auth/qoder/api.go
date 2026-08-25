@@ -76,6 +76,20 @@ func doRefreshToken(ctx context.Context, cfg *config.Config, storage *QoderToken
 // drops below bufferSeconds. authFilePath is the on-disk location of the auth
 // record; an empty value triggers the email-derived fallback path.
 func RefreshTokenIfNeeded(ctx context.Context, cfg *config.Config, storage *QoderTokenStorage, bufferSeconds int64, authFilePath string) error {
+	if storage == nil {
+		return nil
+	}
+	if storage.IsPAT() {
+		if storage.ExpireTime == 0 {
+			return nil
+		}
+		now := time.Now().UnixMilli()
+		bufferMs := bufferSeconds * 1000
+		if storage.ExpireTime-now-bufferMs <= 0 {
+			return RefreshPATSession(ctx, cfg, storage, authFilePath)
+		}
+		return nil
+	}
 	if storage.ExpireTime == 0 {
 		return nil
 	}
