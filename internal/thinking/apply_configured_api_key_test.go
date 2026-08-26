@@ -79,6 +79,17 @@ func TestApplyThinkingWithModelInfoMapsResponsesToCodexHighIntent(t *testing.T) 
 	}
 }
 
+func TestApplyThinking_QoderRegistryPathMapsXHighToMax(t *testing.T) {
+	body := []byte(`{"reasoning_effort":"xhigh"}`)
+	out, err := thinking.ApplyThinking(body, "qoder/dfmodel", "openai-response", "openai", "qoder")
+	if err != nil {
+		t.Fatalf("ApplyThinking() error = %v", err)
+	}
+	if got := gjson.GetBytes(out, "reasoning_effort").String(); got != "max" {
+		t.Fatalf("reasoning_effort = %q, want max; body=%s", got, out)
+	}
+}
+
 func TestApplyThinkingWithModelInfoKeepsSameFamilyValidationStrict(t *testing.T) {
 	modelInfo := &registry.ModelInfo{
 		ID:       "openai-upstream",

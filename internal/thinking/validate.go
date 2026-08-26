@@ -262,10 +262,23 @@ func clampLevel(level ThinkingLevel, modelInfo *registry.ModelInfo, provider str
 		return level
 	}
 	bestIdx, bestDist := -1, len(standardLevelOrder)+1
+	// xhigh sits equally between high and max. Prefer the higher supported
+	// level so "I asked for extra-high" does not collapse to high when max
+	// exists. Lower levels keep the previous nearer-lower tie-break.
+	preferHigher := pos >= levelIndex(string(LevelXHigh))
 
 	for _, s := range supported {
 		if idx := levelIndex(strings.TrimSpace(s)); idx != -1 {
-			if dist := abs(pos - idx); dist < bestDist || (dist == bestDist && idx < bestIdx) {
+			dist := abs(pos - idx)
+			better := dist < bestDist
+			if dist == bestDist {
+				if preferHigher {
+					better = idx > bestIdx
+				} else {
+					better = idx < bestIdx
+				}
+			}
+			if better {
 				bestIdx, bestDist = idx, dist
 			}
 		}
