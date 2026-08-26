@@ -40,12 +40,16 @@ var ModelMap = map[string]string{
 	"efficient":   "efficient",
 	"lite":        "lite",
 	// Frontier models — pin a specific backing model
+	"cmodel":        "cmodel",        // Cantus
+	"qmodel_38max":  "qmodel_38max",  // Qwen3.8-Max
+	"qmodel_latest": "qmodel_latest", // Qwen3.7 Max
 	"qmodel":        "qmodel",        // Qwen3.7 Plus
-	"qmodel_latest": "qmodel_latest", // Qwen3.7 Max (latest)
+	"kmodel_latest": "kmodel_latest", // Kimi K3
+	"kmodel":        "kmodel",        // Kimi K2.7-Code
+	"gmodel":        "gmodel",        // GLM-5.3
+	"gm51model":     "gmodel",        // legacy GLM 5.1/5.2 key
 	"dmodel":        "dmodel",        // DeepSeek V4 Pro
 	"dfmodel":       "dfmodel",       // DeepSeek V4 Flash
-	"gm51model":     "gm51model",     // GLM 5.1
-	"kmodel":        "kmodel",        // Kimi K2.6
 	"mmodel":        "mmodel",        // MiniMax M3
 }
 

@@ -887,6 +887,27 @@ func FetchQoderModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 		return registry.GetQoderModels()
 	}
 
+	if storage.IsPAT() {
+		if err := qoderauth.RefreshTokenIfNeeded(ctx, cfg, storage, 600, qoderAuthFilePath(auth)); err != nil {
+			log.Warnf("qoder: PAT refresh before model list: %v", err)
+		}
+	}
+
+	models, expired := fetchQoderModelsOnce(ctx, auth, cfg, storage)
+	if len(models) > 0 {
+		return models
+	}
+	if expired && storage.IsPAT() {
+		if err := qoderauth.RefreshPATSession(ctx, cfg, storage, qoderAuthFilePath(auth)); err != nil {
+			log.Warnf("qoder: PAT refresh after model list 403: %v", err)
+		} else if retry, _ := fetchQoderModelsOnce(ctx, auth, cfg, storage); len(retry) > 0 {
+			return retry
+		}
+	}
+	return registry.GetQoderModels()
+}
+
+func fetchQoderModelsOnce(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config, storage *qoderauth.QoderTokenStorage) ([]*registry.ModelInfo, bool) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
@@ -899,13 +920,13 @@ func FetchQoderModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 	})
 	if err != nil {
 		log.Warnf("qoder: build cosy headers for model list: %v", err)
-		return registry.GetQoderModels()
+		return nil, false
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, qoderauth.QoderModelListURL, nil)
 	if err != nil {
 		log.Warnf("qoder: build model list request: %v", err)
-		return registry.GetQoderModels()
+		return nil, false
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Accept-Encoding", "identity")
@@ -919,24 +940,24 @@ func FetchQoderModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 		} else {
 			log.Warnf("qoder: model list fetch failed: %v", err)
 		}
-		return registry.GetQoderModels()
+		return nil, false
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Warnf("qoder: read model list response: %v", err)
-		return registry.GetQoderModels()
+		return nil, false
 	}
 	if resp.StatusCode != http.StatusOK {
 		log.Warnf("qoder: model list returned %d: %s", resp.StatusCode, truncate(string(body), 300))
-		return registry.GetQoderModels()
+		return nil, isQoderAuthExpiredMessage(string(body)) || resp.StatusCode == http.StatusForbidden
 	}
 
 	chat := gjson.GetBytes(body, "chat")
 	if !chat.Exists() || !chat.IsArray() {
 		log.Warnf("qoder: model list response missing 'chat' array")
-		return registry.GetQoderModels()
+		return nil, false
 	}
 
 	now := time.Now().Unix()
@@ -1008,18 +1029,34 @@ func FetchQoderModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 
 	if len(models) == 0 {
 		log.Warn("qoder: model list returned no enabled models, falling back to static")
-		return registry.GetQoderModels()
+		return nil, false
 	}
 
+	hadCache := len(storage.ModelConfigKeys()) > 0
 	storage.SetModelConfigs(configs)
+	// Persist only when the on-disk/in-memory cache was empty. Writing on
+	// every /model/list fetch races the file watcher: MarkResult persist
+	// already saves after each chat, the watcher re-registers every Qoder
+	// auth, and a second SaveTokenToFile loops (two "Saving credentials"
+	// lines per account per Q&A).
+	if !hadCache {
+		if path := qoderAuthFilePath(auth); path != "" {
+			if err := storage.SaveTokenToFile(path); err != nil {
+				log.Warnf("qoder: persist model configs: %v", err)
+			}
+		}
+	}
 
 	log.Infof("qoder: fetched %d models from /algo/api/v2/model/list", len(models))
 
 	// Fetch usage alongside models so the management UI has fresh credit data.
-	// Use context.Background() so the goroutine outlives the caller's context.
-	go FetchQoderUsage(context.Background(), auth, cfg)
+	// Skip when a snapshot is already cached — listing models after every
+	// chat must not mint a new OpenAPI jt- or rewrite the auth file.
+	if storage.GetUsageInfo() == nil {
+		go FetchQoderUsage(context.Background(), auth, cfg)
+	}
 
-	return models
+	return models, false
 }
 
 // stableHash returns a deterministic hex identifier from the given inputs.
@@ -1072,14 +1109,29 @@ func truncate(s string, n int) string {
 }
 
 // FetchQoderUsage fetches the current quota usage from /api/v2/quota/usage
-// and caches the result in storage.UsageInfo. It is called opportunistically
-// alongside FetchQoderModels so the management UI can display credit balance
-// without a separate round-trip.
+// and caches the result in storage.UsageInfo. Management "refresh quota"
+// calls this directly. PAT quota uses a separate OpenAPI jt- (not the COSY
+// session); a cached jt- can 401 the same way model list 403s on an expired
+// COSY token, so a 401/403 retries once after re-exchanging from the PAT.
 func FetchQoderUsage(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) *qoderauth.QoderUsageInfo {
 	storage, ok := auth.Storage.(*qoderauth.QoderTokenStorage)
 	if !ok || storage == nil {
 		return nil
 	}
+	info, status := fetchQoderUsageOnce(ctx, auth, cfg, storage)
+	if info != nil {
+		return info
+	}
+	if !storage.IsPAT() || !isQoderUsageUnauthorized(status) {
+		return nil
+	}
+	log.Debugf("qoder: usage returned %d, re-exchanging openapi jobToken", status)
+	storage.OpenAPIJobToken = ""
+	info, _ = fetchQoderUsageOnce(ctx, auth, cfg, storage)
+	return info
+}
+
+func fetchQoderUsageOnce(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config, storage *qoderauth.QoderTokenStorage) (*qoderauth.QoderUsageInfo, int) {
 	bearer := strings.TrimSpace(storage.Token)
 	if storage.IsPAT() {
 		bearer = strings.TrimSpace(storage.OpenAPIJobToken)
@@ -1088,14 +1140,14 @@ func FetchQoderUsage(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.C
 			jt, errEx := authSvc.ExchangeOpenAPIJobToken(ctx, storage.PersonalToken)
 			if errEx != nil {
 				log.Debugf("qoder: openapi jobToken exchange for usage failed: %v", errEx)
-				return nil
+				return nil, 0
 			}
 			storage.OpenAPIJobToken = jt
 			bearer = jt
 		}
 	}
 	if bearer == "" {
-		return nil
+		return nil, 0
 	}
 
 	usageURL := "https://openapi.qoder.sh/api/v2/quota/usage"
@@ -1103,7 +1155,7 @@ func FetchQoderUsage(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.C
 	req, err := http.NewRequest(http.MethodGet, usageURL, nil)
 	if err != nil {
 		log.Debugf("qoder: build usage request: %v", err)
-		return nil
+		return nil, 0
 	}
 	req.Header.Set("Authorization", "Bearer "+bearer)
 	req.Header.Set("Accept", "application/json")
@@ -1112,32 +1164,32 @@ func FetchQoderUsage(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.C
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		log.Debugf("qoder: usage fetch failed: %v", err)
-		return nil
+		return nil, 0
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		log.Debugf("qoder: usage fetch returned %d", resp.StatusCode)
-		return nil
+		return nil, resp.StatusCode
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Debugf("qoder: read usage response: %v", err)
-		return nil
+		return nil, resp.StatusCode
 	}
 
 	var info qoderauth.QoderUsageInfo
 	if err := json.Unmarshal(body, &info); err != nil {
 		log.Debugf("qoder: parse usage response: %v", err)
-		return nil
+		return nil, resp.StatusCode
 	}
 
 	storage.SetUsageInfo(&info)
 	log.Debugf("qoder: usage fetched — %.0f/%.0f %s used (%.1f%%)",
 		info.UserQuota.Used, info.UserQuota.Total, info.UserQuota.Unit,
 		info.TotalUsagePercentage*100)
-	return &info
+	return &info, resp.StatusCode
 }
 
 func validateQoderModel(rawModel string, storage *qoderauth.QoderTokenStorage) (string, error) {

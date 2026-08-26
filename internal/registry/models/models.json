@@ -3932,6 +3932,60 @@
       "context_length": 180000
     },
     {
+      "id": "qoder/cmodel",
+      "object": "model",
+      "created": 1767196800,
+      "owned_by": "qoder",
+      "type": "qoder",
+      "display_name": "Cantus (Qoder)",
+      "description": "Qoder frontier \u2014 Cantus",
+      "context_length": 180000,
+      "supported_input_modalities": [
+        "TEXT",
+        "IMAGE"
+      ],
+      "thinking": {
+        "min": 1024,
+        "max": 32000,
+        "zero_allowed": true,
+        "dynamic_allowed": true,
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "max",
+          "xhigh"
+        ]
+      }
+    },
+    {
+      "id": "qoder/qmodel_38max",
+      "object": "model",
+      "created": 1767196800,
+      "owned_by": "qoder",
+      "type": "qoder",
+      "display_name": "Qwen3.8-Max (Qoder)",
+      "description": "Qoder frontier \u2014 Qwen3.8-Max",
+      "context_length": 180000,
+      "supported_input_modalities": [
+        "TEXT",
+        "IMAGE"
+      ],
+      "thinking": {
+        "min": 1024,
+        "max": 32000,
+        "zero_allowed": true,
+        "dynamic_allowed": true,
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "max",
+          "xhigh"
+        ]
+      }
+    },
+    {
       "id": "qoder/qmodel",
       "object": "model",
       "created": 1767196800,
@@ -4008,13 +4062,13 @@
       }
     },
     {
-      "id": "qoder/gm51model",
+      "id": "qoder/gmodel",
       "object": "model",
       "created": 1767196800,
       "owned_by": "qoder",
       "type": "qoder",
-      "display_name": "GLM 5.1 (Qoder)",
-      "description": "Qoder frontier \u2014 GLM 5.1",
+      "display_name": "GLM-5.3 (Qoder)",
+      "description": "Qoder frontier \u2014 GLM-5.3",
       "context_length": 180000,
       "supported_input_modalities": [
         "TEXT",
@@ -4026,8 +4080,38 @@
         "zero_allowed": true,
         "dynamic_allowed": true,
         "levels": [
+          "low",
+          "medium",
           "high",
-          "max"
+          "max",
+          "xhigh"
+        ]
+      }
+    },
+    {
+      "id": "qoder/kmodel_latest",
+      "object": "model",
+      "created": 1767196800,
+      "owned_by": "qoder",
+      "type": "qoder",
+      "display_name": "Kimi K3 (Qoder)",
+      "description": "Qoder frontier \u2014 Kimi K3",
+      "context_length": 180000,
+      "supported_input_modalities": [
+        "TEXT",
+        "IMAGE"
+      ],
+      "thinking": {
+        "min": 1024,
+        "max": 32000,
+        "zero_allowed": true,
+        "dynamic_allowed": true,
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "max",
+          "xhigh"
         ]
       }
     },
@@ -4037,8 +4121,8 @@
       "created": 1767196800,
       "owned_by": "qoder",
       "type": "qoder",
-      "display_name": "Kimi K2.6 (Qoder)",
-      "description": "Qoder frontier \u2014 Kimi K2.6",
+      "display_name": "Kimi K2.7-Code (Qoder)",
+      "description": "Qoder frontier \u2014 Kimi K2.7-Code",
       "context_length": 256000,
       "supported_input_modalities": [
         "TEXT",

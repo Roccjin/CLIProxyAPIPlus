@@ -121,6 +121,8 @@ func tryRefreshModels(ctx context.Context, label string) {
 		return
 	}
 
+	preserveNonEmptyModelSections(oldData, parsed)
+
 	// Detect changes before updating store.
 	changed := detectChangedProviders(oldData, parsed)
 
@@ -192,6 +194,37 @@ func fetchModelsFromRemote(ctx context.Context) (*staticModelsJSON, string) {
 // detectChangedProviders compares two model catalogs and returns provider names
 // whose model definitions differ. Codex tiers (free/team/plus/pro) are grouped
 // under a single "codex" provider.
+func preserveNonEmptyModelSections(oldData, newData *staticModelsJSON) {
+	if oldData == nil || newData == nil {
+		return
+	}
+	type section struct {
+		name string
+		old  *[]*ModelInfo
+		neu  *[]*ModelInfo
+	}
+	sections := []section{
+		{"claude", &oldData.Claude, &newData.Claude},
+		{"gemini", &oldData.Gemini, &newData.Gemini},
+		{"vertex", &oldData.Vertex, &newData.Vertex},
+		{"aistudio", &oldData.AIStudio, &newData.AIStudio},
+		{"codex-free", &oldData.CodexFree, &newData.CodexFree},
+		{"codex-team", &oldData.CodexTeam, &newData.CodexTeam},
+		{"codex-plus", &oldData.CodexPlus, &newData.CodexPlus},
+		{"codex-pro", &oldData.CodexPro, &newData.CodexPro},
+		{"kimi", &oldData.Kimi, &newData.Kimi},
+		{"qoder", &oldData.Qoder, &newData.Qoder},
+		{"antigravity", &oldData.Antigravity, &newData.Antigravity},
+		{"xai", &oldData.XAI, &newData.XAI},
+	}
+	for _, s := range sections {
+		if len(*s.neu) == 0 && len(*s.old) > 0 {
+			*s.neu = *s.old
+			log.Warnf("models catalog: remote %s section is empty, keeping %d existing definitions", s.name, len(*s.old))
+		}
+	}
+}
+
 func detectChangedProviders(oldData, newData *staticModelsJSON) []string {
 	if oldData == nil || newData == nil {
 		return nil

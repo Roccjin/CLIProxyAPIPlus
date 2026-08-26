@@ -187,6 +187,10 @@ func isQoderAuthExpiredMessage(message string) bool {
 	return strings.Contains(message, `"code":"105"`) || strings.Contains(message, "Login expired")
 }
 
+func isQoderUsageUnauthorized(status int) bool {
+	return status == 401 || status == 403
+}
+
 // CollectQoderCatalog builds management catalog rows from a PAT/OAuth model cache.
 func CollectQoderCatalog(storage *qoderauth.QoderTokenStorage) []QoderCatalogModel {
 	if storage == nil {

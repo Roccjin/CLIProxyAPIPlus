@@ -194,10 +194,19 @@ func TestFallbackQoderCatalogIncludesFrontierKeys(t *testing.T) {
 			t.Fatalf("%s missing thinking levels", model.Key)
 		}
 	}
-	for _, key := range []string{"dfmodel", "dmodel", "ultimate"} {
+	for _, key := range []string{"dfmodel", "dmodel", "ultimate", "qmodel_38max", "gmodel", "cmodel", "kmodel_latest"} {
 		if !found[key] {
 			t.Fatalf("missing %s", key)
 		}
+	}
+}
+
+func TestIsQoderUsageUnauthorized(t *testing.T) {
+	if !isQoderUsageUnauthorized(401) || !isQoderUsageUnauthorized(403) {
+		t.Fatal("401/403 should retry quota with a fresh openapi jobToken")
+	}
+	if isQoderUsageUnauthorized(200) || isQoderUsageUnauthorized(500) || isQoderUsageUnauthorized(0) {
+		t.Fatal("non-auth statuses must not trigger quota token retry")
 	}
 }
 

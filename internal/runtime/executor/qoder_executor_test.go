@@ -1066,6 +1066,16 @@ func TestValidateQoderModel(t *testing.T) {
 			want:     "auto",
 		},
 		{
+			name:     "legacy gm51model aliases to gmodel",
+			rawModel: "qoder/gm51model",
+			want:     "gmodel",
+		},
+		{
+			name:     "qmodel_38max from current catalog",
+			rawModel: "qoder/qmodel_38max",
+			want:     "qmodel_38max",
+		},
+		{
 			name:     "Storage config hit with prefix",
 			rawModel: "qoder/custom-qoder-model",
 			want:     "custom-qoder-model",

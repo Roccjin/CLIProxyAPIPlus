@@ -198,7 +198,7 @@ func (ts *QoderTokenStorage) SaveTokenToFile(authFilePath string) error {
 		return fmt.Errorf("failed to create directory: %v", err)
 	}
 
-	data, errMerge := misc.MergeMetadata(ts, ts.Metadata)
+	data, errMerge := qoderStorageMap(ts)
 	if errMerge != nil {
 		return fmt.Errorf("failed to merge metadata: %w", errMerge)
 	}
@@ -260,7 +260,45 @@ func qoderAuthFileUnchanged(path string, payload []byte) bool {
 	if json.Unmarshal(current, &left) != nil || json.Unmarshal(payload, &right) != nil {
 		return false
 	}
+	stripQoderVolatileAuthFields(left)
+	stripQoderVolatileAuthFields(right)
 	return reflect.DeepEqual(left, right)
+}
+
+func stripQoderVolatileAuthFields(v any) {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return
+	}
+	delete(m, "last_refresh")
+}
+
+// qoderStorageMap serializes the live credential fields, then copies only
+// metadata keys that the struct does not already own. MarkResult persist
+// injects a stale snapshot of the whole auth file as Metadata; overlaying
+// it wholesale would rewrite last_refresh / model_configs / tokens on every
+// chat and trigger a second SaveTokenToFile via the file watcher.
+func qoderStorageMap(ts *QoderTokenStorage) (map[string]any, error) {
+	if ts == nil {
+		return map[string]any{}, nil
+	}
+	ts.modelConfigMu.RLock()
+	raw, err := json.Marshal(ts)
+	ts.modelConfigMu.RUnlock()
+	if err != nil {
+		return nil, err
+	}
+	data := map[string]any{}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return nil, err
+	}
+	for k, v := range ts.Metadata {
+		if _, exists := data[k]; exists {
+			continue
+		}
+		data[k] = v
+	}
+	return data, nil
 }
 
 // IsExpired checks if the token has expired or will expire within the given duration
