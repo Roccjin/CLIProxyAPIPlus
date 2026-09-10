@@ -3,8 +3,10 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codebuddy"
@@ -106,5 +108,76 @@ func TestFetchCodeBuddyQuotaMissingToken(t *testing.T) {
 	_, err := FetchCodeBuddyQuota(context.Background(), &cliproxyauth.Auth{}, nil)
 	if err == nil {
 		t.Fatal("expected missing token error")
+	}
+}
+
+func TestParseCodeBuddyResourcePage_EmptyDataIsZeroQuota(t *testing.T) {
+	t.Parallel()
+
+	page, err := parseCodeBuddyResourcePage([]byte(`{"code":0,"msg":"OK","data":null}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Accounts) != 0 || page.TotalCount != 0 {
+		t.Fatalf("page = %+v", page)
+	}
+}
+
+func TestFetchCodeBuddyQuotaFromBase_RetriesServerError(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{"code":1,"msg":"busy"}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 0,
+			"msg":  "OK",
+			"data": map[string]any{
+				"Response": map[string]any{
+					"Data": map[string]any{
+						"TotalCount":  1,
+						"TotalDosage": 10,
+						"Accounts": []map[string]any{{
+							"PackageName":    "Retry Pack",
+							"CapacityRemain": 7,
+							"CapacityUsed":   3,
+							"CapacitySize":   10,
+						}},
+					},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	auth := &cliproxyauth.Auth{Metadata: map[string]any{
+		"access_token": "token",
+		"user_id":      "user-1",
+		"domain":       codebuddy.DefaultDomainGlobal,
+	}}
+	quota, err := fetchCodeBuddyQuotaFromBase(context.Background(), auth, nil, srv.URL, "token", "user-1", codebuddy.DefaultDomainGlobal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("calls = %d, want 2", calls.Load())
+	}
+	if quota.TotalRemain != 7 || quota.PackCount != 1 {
+		t.Fatalf("quota = %+v", quota)
+	}
+}
+
+func TestIsCodeBuddyQuotaUnauthorized(t *testing.T) {
+	t.Parallel()
+	if !isCodeBuddyQuotaUnauthorized(fmt.Errorf("codebuddy: resource status 401")) {
+		t.Fatal("expected 401 to be unauthorized")
+	}
+	if isCodeBuddyQuotaUnauthorized(fmt.Errorf("codebuddy: resource status 500")) {
+		t.Fatal("500 is not unauthorized")
 	}
 }

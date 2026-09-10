@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codebuddy"
@@ -71,11 +72,24 @@ func FetchCodeBuddyQuota(ctx context.Context, auth *cliproxyauth.Auth, cfg *conf
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return fetchCodeBuddyQuotaFromBase(ctx, auth, cfg, codebuddy.BillingBaseURLForDomain(domain), accessToken, userID, domain)
+	quota, err := fetchCodeBuddyQuotaFromBase(ctx, auth, cfg, codebuddy.BillingBaseURLForDomain(domain), accessToken, userID, domain)
+	if err != nil && isCodeBuddyQuotaUnauthorized(err) {
+		newToken, newUser, newDomain, refreshErr := refreshCodeBuddyQuotaAuth(ctx, auth, cfg, accessToken, userID, domain)
+		if refreshErr != nil {
+			log.Warnf("codebuddy quota: token refresh after unauthorized failed: %v", refreshErr)
+			return nil, err
+		}
+		accessToken, userID, domain = newToken, newUser, newDomain
+		quota, err = fetchCodeBuddyQuotaFromBase(ctx, auth, cfg, codebuddy.BillingBaseURLForDomain(domain), accessToken, userID, domain)
+	}
+	if err != nil {
+		log.Warnf("codebuddy quota: fetch failed: %v", err)
+	}
+	return quota, err
 }
 
 func fetchCodeBuddyQuotaFromBase(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config, billingBase, accessToken, userID, domain string) (*CodeBuddyQuota, error) {
-	now := time.Now()
+	now := time.Now().UTC()
 	baseBody := map[string]any{
 		"PageSize":                 codeBuddyResourcePageSize,
 		"ProductCode":              codeBuddyProductCode,
@@ -132,29 +146,111 @@ func fetchCodeBuddyResourcePage(ctx context.Context, auth *cliproxyauth.Auth, cf
 	applyCodeBuddyBillingHeaders(req, accessToken, userID, domain)
 
 	httpClient := newProxyAwareHTTPClient(ctx, cfg, auth, 0)
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return empty, fmt.Errorf("codebuddy: resource request failed: %w", err)
-	}
-	defer func() {
+	var lastErr error
+	for attempt := 0; attempt <= codeBuddyTransientProviderRetries; attempt++ {
+		if attempt > 0 {
+			req, err = http.NewRequestWithContext(ctx, http.MethodPost, billingBase+codeBuddyResourcePath, bytes.NewReader(rawBody))
+			if err != nil {
+				return empty, fmt.Errorf("codebuddy: build resource request: %w", err)
+			}
+			applyCodeBuddyBillingHeaders(req, accessToken, userID, domain)
+		}
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("codebuddy: resource request failed: %w", err)
+			if attempt < codeBuddyTransientProviderRetries && isCodeBuddyTransientNetworkError(err) {
+				log.Warnf("codebuddy quota: transient network error: %v; retrying", err)
+				continue
+			}
+			return empty, lastErr
+		}
+		raw, errRead := io.ReadAll(resp.Body)
 		if errClose := resp.Body.Close(); errClose != nil {
 			log.Errorf("codebuddy: close resource body error: %v", errClose)
 		}
-	}()
+		if errRead != nil {
+			return empty, fmt.Errorf("codebuddy: read resource response: %w", errRead)
+		}
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			lastErr = fmt.Errorf("codebuddy: resource status %d", resp.StatusCode)
+			if attempt < codeBuddyTransientProviderRetries && isCodeBuddyQuotaRetryableStatus(resp.StatusCode) {
+				log.Warnf("codebuddy quota: retryable status %d; retrying", resp.StatusCode)
+				continue
+			}
+			return empty, lastErr
+		}
+		page, err := parseCodeBuddyResourcePage(raw)
+		if err != nil {
+			return empty, err
+		}
+		return page, nil
+	}
+	return empty, lastErr
+}
 
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return empty, fmt.Errorf("codebuddy: read resource response: %w", err)
+func isCodeBuddyQuotaRetryableStatus(status int) bool {
+	switch status {
+	case http.StatusRequestTimeout, http.StatusTooManyRequests,
+		http.StatusInternalServerError, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
 	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return empty, fmt.Errorf("codebuddy: resource status %d", resp.StatusCode)
-	}
+}
 
-	page, err := parseCodeBuddyResourcePage(raw)
-	if err != nil {
-		return empty, err
+func isCodeBuddyQuotaUnauthorized(err error) bool {
+	if err == nil {
+		return false
 	}
-	return page, nil
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "resource status 401") ||
+		strings.Contains(msg, "resource status 403") ||
+		strings.Contains(msg, "unauthorized") ||
+		strings.Contains(msg, "unauthenticated")
+}
+
+func refreshCodeBuddyQuotaAuth(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config, accessToken, userID, domain string) (string, string, string, error) {
+	refreshToken := ""
+	if auth != nil {
+		refreshToken = metaStringValue(auth.Metadata, "refresh_token")
+	}
+	if refreshToken == "" {
+		return "", "", "", fmt.Errorf("codebuddy: missing refresh token")
+	}
+	authSvc := codebuddy.NewCodeBuddyAuth(cfg)
+	storage, err := authSvc.RefreshToken(ctx, accessToken, refreshToken, userID, domain)
+	if err != nil {
+		return "", "", "", err
+	}
+	if storage == nil || strings.TrimSpace(storage.AccessToken) == "" {
+		return "", "", "", fmt.Errorf("codebuddy: empty refresh token response")
+	}
+	if auth != nil {
+		if auth.Metadata == nil {
+			auth.Metadata = map[string]any{}
+		}
+		auth.Metadata["access_token"] = storage.AccessToken
+		if storage.RefreshToken != "" {
+			auth.Metadata["refresh_token"] = storage.RefreshToken
+		}
+		if storage.UserID != "" {
+			auth.Metadata["user_id"] = storage.UserID
+		}
+		if storage.Domain != "" {
+			auth.Metadata["domain"] = storage.Domain
+		}
+		auth.Metadata["expires_in"] = storage.ExpiresIn
+	}
+	newUser := storage.UserID
+	if newUser == "" {
+		newUser = userID
+	}
+	newDomain := storage.Domain
+	if newDomain == "" {
+		newDomain = domain
+	}
+	return storage.AccessToken, newUser, newDomain, nil
 }
 
 func applyCodeBuddyBillingHeaders(req *http.Request, accessToken, userID, domain string) {
@@ -187,7 +283,7 @@ func parseCodeBuddyResourcePage(raw []byte) (codeBuddyResourcePage, error) {
 		return empty, fmt.Errorf("codebuddy: resource code %d: %s", env.Code, env.Msg)
 	}
 	if len(env.Data) == 0 || string(env.Data) == "null" {
-		return empty, fmt.Errorf("codebuddy: empty resource data")
+		return empty, nil
 	}
 
 	var wrapped struct {

@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -340,6 +342,11 @@ func (e *CodeBuddyExecutor) doCodeBuddyChat(ctx context.Context, auth *cliproxya
 		httpResp, err := httpClient.Do(httpReq)
 		if err != nil {
 			recordAPIResponseError(ctx, e.cfg, err)
+			lastErr = err
+			if attempt < codeBuddyTransientProviderRetries && isCodeBuddyTransientNetworkError(err) {
+				log.Warnf("codebuddy executor: transient network error: %v; retrying", err)
+				continue
+			}
 			return nil, err
 		}
 		recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
@@ -380,6 +387,21 @@ func isCodeBuddyTransientProviderError(status int, body []byte) bool {
 		gjson.GetBytes(body, "extError.message").String(),
 	}, " "))
 	return strings.Contains(msg, "temporarily unavailable") || strings.Contains(msg, "service_unavailable")
+}
+
+func isCodeBuddyTransientNetworkError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "tls handshake timeout") ||
+		strings.Contains(msg, "timeout awaiting response headers") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "unexpected eof")
 }
 
 // normalizeCodeBuddyChatStreamLine rewrites CodeBuddy international SSE chunks.
@@ -463,8 +485,54 @@ func prepareCodeBuddyChatPayload(payload []byte, domain string) []byte {
 	if !gjson.GetBytes(payload, "reasoning_summary").Exists() {
 		payload, _ = sjson.SetBytes(payload, "reasoning_summary", codeBuddyDefaultReasoningSummary)
 	}
+	payload = rewriteCodeBuddyDeveloperRoles(payload)
 	payload = ensureCodeBuddySystemMessage(payload, domain)
 	return sanitizeCodeBuddyChatPayload(payload)
+}
+
+// rewriteCodeBuddyDeveloperRoles maps OpenAI's developer role to system.
+// GPT-5 / pi / OpenAI JS clients send role=developer. www.codebuddy.ai
+// returns 400/11128 ("Illegal API invocation from an unapproved channel")
+// when any message still has that role, even after a system turn is prepended.
+func rewriteCodeBuddyDeveloperRoles(payload []byte) []byte {
+	messages := gjson.GetBytes(payload, "messages")
+	if !messages.Exists() || !messages.IsArray() {
+		return payload
+	}
+	arr := messages.Array()
+	if len(arr) == 0 {
+		return payload
+	}
+
+	changed := false
+	var b strings.Builder
+	b.Grow(len(messages.Raw))
+	b.WriteByte('[')
+	for i, msg := range arr {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		if strings.EqualFold(strings.TrimSpace(msg.Get("role").String()), "developer") {
+			next, err := sjson.Set(msg.Raw, "role", "system")
+			if err != nil {
+				b.WriteString(msg.Raw)
+				continue
+			}
+			b.WriteString(next)
+			changed = true
+			continue
+		}
+		b.WriteString(msg.Raw)
+	}
+	b.WriteByte(']')
+	if !changed {
+		return payload
+	}
+	out, err := sjson.SetRawBytes(payload, "messages", []byte(b.String()))
+	if err != nil {
+		return payload
+	}
+	return out
 }
 
 func sanitizeCodeBuddyChatPayload(payload []byte) []byte {
@@ -491,7 +559,8 @@ func sanitizeCodeBuddyChatPayload(payload []byte) []byte {
 // gateway would reject the payload. www.codebuddy.ai returns 400/11128
 // ("first message is not system prompt") when messages[0] is not role=system.
 // /v1/responses often has no instructions field, so the OpenAI translator
-// emits a user/developer turn first. CN does not require this.
+// emits a user turn first. Developer roles are rewritten to system before
+// this runs. CN does not require a leading system turn.
 func ensureCodeBuddySystemMessage(payload []byte, domain string) []byte {
 	if len(payload) == 0 || !codebuddy.IsGlobalDomain(domain) {
 		return payload

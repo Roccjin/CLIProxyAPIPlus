@@ -2,6 +2,8 @@ package executor
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -277,6 +279,76 @@ func TestSanitizeCodeBuddyChatPayload_DropsClientMetadata(t *testing.T) {
 	}
 	if !gjson.GetBytes(out, "stream").Bool() {
 		t.Fatal("expected stream=true")
+	}
+}
+
+func TestPrepareCodeBuddyChatPayload_ConvertsDeveloperWithoutExtraSystem(t *testing.T) {
+	t.Parallel()
+
+	in := []byte(`{"model":"gpt-5.6-luna","messages":[{"role":"developer","content":"You are pi."},{"role":"user","content":[{"type":"text","text":"hi"}]}],"store":true,"max_completion_tokens":128000}`)
+	out := prepareCodeBuddyChatPayload(in, "www.codebuddy.ai")
+	if gjson.GetBytes(out, "store").Exists() {
+		t.Fatalf("store leaked: %s", out)
+	}
+	if got := gjson.GetBytes(out, "messages.#").Int(); got != 2 {
+		t.Fatalf("messages len = %d, want 2; body=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "system" {
+		t.Fatalf("messages.0.role = %q, want system; body=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "messages.0.content").String(); got != "You are pi." {
+		t.Fatalf("messages.0.content = %q, want original developer prompt", got)
+	}
+	if got := gjson.GetBytes(out, "messages.1.role").String(); got != "user" {
+		t.Fatalf("messages.1.role = %q", got)
+	}
+	for _, msg := range gjson.GetBytes(out, "messages").Array() {
+		if strings.EqualFold(msg.Get("role").String(), "developer") {
+			t.Fatalf("developer role leaked: %s", out)
+		}
+	}
+}
+
+func TestRewriteCodeBuddyDeveloperRoles_RewritesEveryDeveloperTurn(t *testing.T) {
+	t.Parallel()
+
+	in := []byte(`{"messages":[{"role":"system","content":"sys"},{"role":"Developer","content":"dev"},{"role":"user","content":"hi"}]}`)
+	out := rewriteCodeBuddyDeveloperRoles(in)
+	if got := gjson.GetBytes(out, "messages.1.role").String(); got != "system" {
+		t.Fatalf("messages.1.role = %q, want system; body=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "messages.1.content").String(); got != "dev" {
+		t.Fatalf("messages.1.content = %q", got)
+	}
+}
+
+func TestPrepareCodeBuddyChatPayload_ConvertsDeveloperOnCN(t *testing.T) {
+	t.Parallel()
+
+	in := []byte(`{"messages":[{"role":"developer","content":"cn-dev"},{"role":"user","content":"hi"}]}`)
+	out := prepareCodeBuddyChatPayload(in, "www.codebuddy.cn")
+	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "system" {
+		t.Fatalf("messages.0.role = %q, want system; body=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "messages.#").Int(); got != 2 {
+		t.Fatalf("cn should not prepend an extra system turn: %s", out)
+	}
+}
+
+func TestIsCodeBuddyTransientNetworkError(t *testing.T) {
+	t.Parallel()
+
+	if !isCodeBuddyTransientNetworkError(errors.New(`Post "https://www.codebuddy.ai/v2/chat/completions": net/http: TLS handshake timeout`)) {
+		t.Fatal("expected TLS handshake timeout to be transient")
+	}
+	if isCodeBuddyTransientNetworkError(context.Canceled) {
+		t.Fatal("canceled is not transient")
+	}
+	if isCodeBuddyTransientNetworkError(context.DeadlineExceeded) {
+		t.Fatal("deadline exceeded is not transient")
+	}
+	if isCodeBuddyTransientNetworkError(errors.New("status 400")) {
+		t.Fatal("400 is not a transient network error")
 	}
 }
 

@@ -27,7 +27,7 @@ func (h *Handler) GetCodeBuddyQuota(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 45*time.Second)
 	defer cancel()
 	info, err := executor.FetchCodeBuddyQuota(ctx, auth, h.cfg)
 	if err != nil {
