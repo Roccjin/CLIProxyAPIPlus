@@ -169,6 +169,7 @@ func main() {
 	var kiroIDCFlow string
 	var githubCopilotLogin bool
 	var codeBuddyLogin bool
+	var codeBuddyRegion string
 	var xaiLogin bool
 	var qoderLogin bool
 	var qoderOAuth bool
@@ -214,6 +215,7 @@ func main() {
 	flag.StringVar(&kiroIDCFlow, "kiro-idc-flow", "", "IDC flow type: authcode (default) or device")
 	flag.BoolVar(&githubCopilotLogin, "github-copilot-login", false, "Login to GitHub Copilot using device flow")
 	flag.BoolVar(&codeBuddyLogin, "codebuddy-login", false, "Login to CodeBuddy using browser OAuth flow")
+	flag.StringVar(&codeBuddyRegion, "codebuddy-region", "global", "CodeBuddy login region: global (www.codebuddy.ai) or cn (www.codebuddy.cn)")
 	flag.BoolVar(&xaiLogin, "xai-login", false, "Login to xAI using OAuth")
 	flag.BoolVar(&qoderLogin, "qoder-login", false, "Login to Qoder using a personal access token (pt-)")
 	flag.BoolVar(&qoderOAuth, "qoder-oauth", false, "Login to Qoder using the legacy OAuth device flow")
@@ -704,10 +706,11 @@ func main() {
 
 	// Create login options to be used in authentication flows.
 	options := &cmd.LoginOptions{
-		NoBrowser:    noBrowser,
-		CallbackPort: oauthCallbackPort,
-		QoderOAuth:   qoderOAuth,
-		QoderPAT:     qoderPAT,
+		NoBrowser:       noBrowser,
+		CallbackPort:    oauthCallbackPort,
+		QoderOAuth:      qoderOAuth,
+		QoderPAT:        qoderPAT,
+		CodeBuddyRegion: codeBuddyRegion,
 	}
 
 	commandMode := isOneShotCommandMode(commandModeOptions{

@@ -154,7 +154,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	case "gitlab":
 		models = applyExcludedModels(executor.GitLabModelsFromAuth(a), excluded)
 	case "codebuddy":
-		models = applyExcludedModels(registry.GetCodeBuddyModels(), excluded)
+		models = applyExcludedModels(executor.FetchCodeBuddyModels(ctx, a, s.cfg), excluded)
 	case "qoder":
 		models = applyExcludedModels(executor.FetchQoderModels(ctx, a, s.cfg), excluded)
 	case "xai":

@@ -30,6 +30,9 @@ type LoginOptions struct {
 
 	// QoderPAT is an optional Qoder personal access token (pt-...).
 	QoderPAT string
+
+	// CodeBuddyRegion selects the CodeBuddy login site: "global" (www.codebuddy.ai) or "cn".
+	CodeBuddyRegion string
 }
 
 // DoCodexLogin triggers the Codex OAuth flow through the shared authentication manager.

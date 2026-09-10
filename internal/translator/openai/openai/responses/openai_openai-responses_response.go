@@ -68,6 +68,19 @@ func emitRespEvent(event string, payload []byte) []byte {
 	return translatorcommon.SSEEventData(event, payload)
 }
 
+func chatDeltaHasToolCall(toolCalls gjson.Result) bool {
+	if !toolCalls.Exists() || !toolCalls.IsArray() {
+		return false
+	}
+	for _, toolCall := range toolCalls.Array() {
+		if !toolCall.Exists() || toolCall.Type == gjson.Null {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func incompleteByFinishReason(reason string) ([]byte, bool) {
 	switch reason {
 	case "length", "max_tokens":
@@ -725,7 +738,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 				}
 
 				// tool calls
-				if tcs := delta.Get("tool_calls"); tcs.Exists() && tcs.IsArray() {
+				if tcs := delta.Get("tool_calls"); tcs.Exists() && tcs.IsArray() && chatDeltaHasToolCall(tcs) {
 					if st.ReasoningID != "" {
 						stopReasoning(st.ReasoningBuf.String())
 						st.ReasoningBuf.Reset()

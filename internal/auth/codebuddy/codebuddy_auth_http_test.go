@@ -14,6 +14,7 @@ func newTestAuth(serverURL string) *CodeBuddyAuth {
 	return &CodeBuddyAuth{
 		httpClient: http.DefaultClient,
 		baseURL:    serverURL,
+		site:       SiteCN(),
 	}
 }
 
@@ -41,6 +42,9 @@ func TestFetchAuthState_Success(t *testing.T) {
 		if got := r.Header.Get("User-Agent"); got != UserAgent {
 			t.Errorf("expected User-Agent %s, got %s", UserAgent, got)
 		}
+		if got := r.Header.Get("X-Domain"); got != "copilot.tencent.com" {
+			t.Errorf("expected X-Domain copilot.tencent.com, got %s", got)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"code": 0,
@@ -63,6 +67,50 @@ func TestFetchAuthState_Success(t *testing.T) {
 	}
 	if result.AuthURL != "https://example.com/login?state=test-state-abc" {
 		t.Errorf("unexpected authURL: %s", result.AuthURL)
+	}
+}
+
+func TestFetchAuthState_GlobalDomainHeader(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Domain"); got != DefaultDomainGlobal {
+			t.Errorf("expected X-Domain %s, got %s", DefaultDomainGlobal, got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 0,
+			"msg":  "ok",
+			"data": map[string]any{
+				"state":   "global-state",
+				"authUrl": "https://www.codebuddy.ai/login?state=global-state",
+			},
+		})
+	}))
+	defer srv.Close()
+
+	auth := NewCodeBuddyAuthForSite(nil, SiteGlobal())
+	auth.httpClient = http.DefaultClient
+	auth.baseURL = srv.URL
+
+	result, err := auth.FetchAuthState(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.State != "global-state" {
+		t.Errorf("unexpected state %q", result.State)
+	}
+}
+
+func TestResolvedBaseURL_RoutesByDomain(t *testing.T) {
+	auth := NewCodeBuddyAuth(nil)
+	if got := auth.resolvedBaseURL(DefaultDomainGlobal); got != BaseURLGlobal {
+		t.Errorf("global domain base = %s, want %s", got, BaseURLGlobal)
+	}
+	if got := auth.resolvedBaseURL(DefaultDomain); got != BaseURLCN {
+		t.Errorf("cn domain base = %s, want %s", got, BaseURLCN)
+	}
+
+	testAuth := newTestAuth("http://127.0.0.1:9")
+	if got := testAuth.resolvedBaseURL(DefaultDomainGlobal); got != "http://127.0.0.1:9" {
+		t.Errorf("test override base = %s", got)
 	}
 }
 

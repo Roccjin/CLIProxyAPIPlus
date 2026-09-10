@@ -281,6 +281,12 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 						fileData["note"] = trimmed
 					}
 				}
+				if domain := strings.TrimSpace(gjson.GetBytes(data, "domain").String()); domain != "" {
+					fileData["domain"] = domain
+				}
+				if region := strings.TrimSpace(gjson.GetBytes(data, "region").String()); region != "" {
+					fileData["region"] = region
+				}
 				if wv := gjson.GetBytes(data, "websockets"); wv.Exists() {
 					switch wv.Type {
 					case gjson.True:
@@ -419,6 +425,12 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth) gin.H {
 			}
 		}
 	}
+	if domain := authMetadataString(auth, "domain"); domain != "" {
+		entry["domain"] = domain
+	}
+	if region := authMetadataString(auth, "region"); region != "" {
+		entry["region"] = region
+	}
 	if weight, ok := authWeightValue(auth); ok {
 		entry[coreauth.AttributeWeight] = weight
 	}
@@ -429,6 +441,21 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth) gin.H {
 		entry["websockets"] = websockets
 	}
 	return entry
+}
+
+func authMetadataString(auth *coreauth.Auth, key string) string {
+	if auth == nil || auth.Metadata == nil || strings.TrimSpace(key) == "" {
+		return ""
+	}
+	raw, ok := auth.Metadata[key]
+	if !ok || raw == nil {
+		return ""
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(value)
 }
 
 func authWeightValue(auth *coreauth.Auth) (int64, bool) {

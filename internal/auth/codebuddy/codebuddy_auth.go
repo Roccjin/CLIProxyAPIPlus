@@ -20,10 +20,6 @@ import (
 )
 
 const (
-	BaseURL       = "https://copilot.tencent.com"
-	DefaultDomain = "www.codebuddy.cn"
-	UserAgent     = "CLI/2.63.2 CodeBuddy/2.63.2"
-
 	codeBuddyStatePath   = "/v2/plugin/auth/state"
 	codeBuddyTokenPath   = "/v2/plugin/auth/token"
 	codeBuddyRefreshPath = "/v2/plugin/auth/token/refresh"
@@ -37,14 +33,22 @@ type CodeBuddyAuth struct {
 	httpClient *http.Client
 	cfg        *config.Config
 	baseURL    string
+	site       Site
 }
 
 func NewCodeBuddyAuth(cfg *config.Config) *CodeBuddyAuth {
+	return NewCodeBuddyAuthForSite(cfg, SiteCN())
+}
+
+func NewCodeBuddyAuthForSite(cfg *config.Config, site Site) *CodeBuddyAuth {
+	if site.APIBaseURL == "" {
+		site = SiteCN()
+	}
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 	if cfg != nil {
 		httpClient = util.SetProxy(&cfg.SDKConfig, httpClient)
 	}
-	return &CodeBuddyAuth{httpClient: httpClient, cfg: cfg, baseURL: BaseURL}
+	return &CodeBuddyAuth{httpClient: httpClient, cfg: cfg, baseURL: site.APIBaseURL, site: site}
 }
 
 // AuthState holds the state and auth URL returned by the auth state API.
@@ -63,18 +67,8 @@ func (a *CodeBuddyAuth) FetchAuthState(ctx context.Context) (*AuthState, error) 
 		return nil, fmt.Errorf("codebuddy: failed to create auth state request: %w", err)
 	}
 
-	requestID := uuid.NewString()
-	req.Header.Set("Accept", "application/json, text/plain, */*")
+	a.applyAnonymousAuthHeaders(req, true)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Requested-With", "XMLHttpRequest")
-	req.Header.Set("X-Domain", "copilot.tencent.com")
-	req.Header.Set("X-No-Authorization", "true")
-	req.Header.Set("X-No-User-Id", "true")
-	req.Header.Set("X-No-Enterprise-Id", "true")
-	req.Header.Set("X-No-Department-Info", "true")
-	req.Header.Set("X-Product", "SaaS")
-	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("X-Request-ID", requestID)
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
@@ -189,12 +183,16 @@ func (a *CodeBuddyAuth) PollForToken(ctx context.Context, state string) (*CodeBu
 				return nil, fmt.Errorf("%w: empty data in response", ErrTokenFetchFailed)
 			}
 			userID, _ := a.DecodeUserID(result.Data.AccessToken)
+			domain := strings.TrimSpace(result.Data.Domain)
+			if domain == "" {
+				domain = a.tokenDomainFallback()
+			}
 			return &CodeBuddyTokenStorage{
 				AccessToken:  result.Data.AccessToken,
 				RefreshToken: result.Data.RefreshToken,
 				ExpiresIn:    result.Data.ExpiresIn,
 				TokenType:    result.Data.TokenType,
-				Domain:       result.Data.Domain,
+				Domain:       domain,
 				UserID:       userID,
 				Type:         "codebuddy",
 			}, nil
@@ -237,7 +235,7 @@ func (a *CodeBuddyAuth) RefreshToken(ctx context.Context, accessToken, refreshTo
 	if domain == "" {
 		domain = DefaultDomain
 	}
-	refreshURL := fmt.Sprintf("%s%s", a.baseURL, codeBuddyRefreshPath)
+	refreshURL := fmt.Sprintf("%s%s", a.resolvedBaseURL(domain), codeBuddyRefreshPath)
 	body := []byte("{}")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, refreshURL, bytes.NewReader(body))
@@ -245,14 +243,13 @@ func (a *CodeBuddyAuth) RefreshToken(ctx context.Context, accessToken, refreshTo
 		return nil, fmt.Errorf("codebuddy: failed to create refresh request: %w", err)
 	}
 
-	requestID := strings.ReplaceAll(uuid.New().String(), "-", "")
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 	req.Header.Set("X-Domain", domain)
 	req.Header.Set("X-Refresh-Token", refreshToken)
 	req.Header.Set("X-Auth-Refresh-Source", "plugin")
-	req.Header.Set("X-Request-ID", requestID)
+	req.Header.Set("X-Request-ID", newCodeBuddyRequestID())
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("X-User-Id", userID)
 	req.Header.Set("X-Product", "SaaS")
@@ -324,6 +321,10 @@ func (a *CodeBuddyAuth) RefreshToken(ctx context.Context, accessToken, refreshTo
 }
 
 func (a *CodeBuddyAuth) applyPollHeaders(req *http.Request) {
+	a.applyAnonymousAuthHeaders(req, false)
+}
+
+func (a *CodeBuddyAuth) applyAnonymousAuthHeaders(req *http.Request, includeDomain bool) {
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
@@ -332,4 +333,33 @@ func (a *CodeBuddyAuth) applyPollHeaders(req *http.Request) {
 	req.Header.Set("X-No-Enterprise-Id", "true")
 	req.Header.Set("X-No-Department-Info", "true")
 	req.Header.Set("X-Product", "SaaS")
+	req.Header.Set("X-Request-ID", newCodeBuddyRequestID())
+	if includeDomain {
+		req.Header.Set("X-Domain", a.headerDomain())
+	}
+}
+
+func (a *CodeBuddyAuth) headerDomain() string {
+	if a != nil && strings.TrimSpace(a.site.HeaderDomain) != "" {
+		return a.site.HeaderDomain
+	}
+	return "copilot.tencent.com"
+}
+
+func (a *CodeBuddyAuth) tokenDomainFallback() string {
+	if a != nil && strings.TrimSpace(a.site.TokenDomain) != "" {
+		return a.site.TokenDomain
+	}
+	return DefaultDomain
+}
+
+func (a *CodeBuddyAuth) resolvedBaseURL(domain string) string {
+	if a != nil && a.baseURL != "" && a.baseURL != BaseURLCN && a.baseURL != BaseURLGlobal {
+		return a.baseURL
+	}
+	return APIBaseURLForDomain(domain)
+}
+
+func newCodeBuddyRequestID() string {
+	return strings.ReplaceAll(uuid.NewString(), "-", "")
 }

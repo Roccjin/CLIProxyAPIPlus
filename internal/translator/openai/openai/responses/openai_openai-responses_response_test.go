@@ -242,6 +242,75 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_FinalizesOpenMess
 	}
 }
 
+func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_EmptyToolCallsDoNotFinalizeEarly(t *testing.T) {
+	t.Parallel()
+
+	request := []byte(`{"model":"gpt-5.6-luna"}`)
+	lines := []string{
+		`data: {"id":"cmb-1","object":"chat.completion.chunk","created":1,"model":"gpt-5.6-luna","choices":[{"index":0,"delta":{"content":"","reasoning_content":"先","tool_calls":[]},"finish_reason":""}]}`,
+		`data: {"id":"cmb-1","object":"chat.completion.chunk","created":1,"model":"gpt-5.6-luna","choices":[{"index":0,"delta":{"content":"","reasoning_content":"想","tool_calls":[]},"finish_reason":""}]}`,
+		`data: {"id":"cmb-1","object":"chat.completion.chunk","created":1,"model":"gpt-5.6-luna","choices":[{"index":0,"delta":{"content":"你","reasoning_content":"","tool_calls":[]},"finish_reason":""}]}`,
+		`data: {"id":"cmb-1","object":"chat.completion.chunk","created":1,"model":"gpt-5.6-luna","choices":[{"index":0,"delta":{"content":"好","reasoning_content":"","tool_calls":[]},"finish_reason":""}]}`,
+		`data: {"id":"cmb-1","object":"chat.completion.chunk","created":1,"model":"gpt-5.6-luna","choices":[{"index":0,"delta":{"content":"","reasoning_content":"","tool_calls":[]},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+	}
+
+	var param any
+	var events []string
+	var textDone gjson.Result
+	reasoningAdded := 0
+	reasoningDone := 0
+	var reasoningText strings.Builder
+
+	for _, line := range lines {
+		for _, chunk := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "gpt-5.6-luna", request, request, []byte(line), &param) {
+			event, data := parseOpenAIResponsesSSEEvent(t, chunk)
+			events = append(events, event)
+			switch event {
+			case "response.output_item.added":
+				if data.Get("item.type").String() == "reasoning" {
+					reasoningAdded++
+				}
+			case "response.output_item.done":
+				if data.Get("item.type").String() == "reasoning" {
+					reasoningDone++
+				}
+			case "response.reasoning_summary_text.delta":
+				reasoningText.WriteString(data.Get("delta").String())
+			case "response.output_text.done":
+				textDone = data
+			}
+		}
+	}
+
+	if reasoningAdded != 1 || reasoningDone != 1 {
+		t.Fatalf("reasoning items added=%d done=%d, want 1/1; events=%v", reasoningAdded, reasoningDone, events)
+	}
+	if got := reasoningText.String(); got != "先想" {
+		t.Fatalf("reasoning text = %q, want 先想", got)
+	}
+	if got := textDone.Get("text").String(); got != "你好" {
+		t.Fatalf("output_text.done text = %q, want 你好; events=%v", got, events)
+	}
+
+	doneCount := 0
+	completedCount := 0
+	for _, event := range events {
+		if event == "response.output_text.done" {
+			doneCount++
+		}
+		if event == "response.completed" {
+			completedCount++
+		}
+	}
+	if doneCount != 1 {
+		t.Fatalf("output_text.done count = %d, want 1; events=%v", doneCount, events)
+	}
+	if completedCount != 1 {
+		t.Fatalf("response.completed count = %d, want 1; events=%v", completedCount, events)
+	}
+}
+
 func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_MultipleToolCallsRemainSeparate(t *testing.T) {
 	in := []string{
 		`data: {"id":"resp_test","object":"chat.completion.chunk","created":1773896263,"model":"model","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":null,"tool_calls":[{"index":0,"id":"call_read","type":"function","function":{"name":"read","arguments":""}}]},"finish_reason":null}]}`,

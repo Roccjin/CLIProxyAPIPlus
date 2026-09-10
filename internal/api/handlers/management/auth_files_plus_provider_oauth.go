@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codebuddy"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/copilot"
 	cursorauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/cursor"
 	geminiAuth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/gemini"
@@ -122,6 +123,95 @@ func (h *Handler) RequestCursorToken(c *gin.Context) {
 		"state":  state,
 	})
 }
+
+func (h *Handler) RequestCodeBuddyToken(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	site, err := codebuddy.ParseSite(c.Query("region"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	log.Infof("Initializing CodeBuddy authentication (region=%s)...", site.Name)
+
+	authSvc := codebuddy.NewCodeBuddyAuthForSite(h.cfg, site)
+	authState, errState := authSvc.FetchAuthState(ctx)
+	if errState != nil {
+		log.Errorf("Failed to start CodeBuddy login: %v", errState)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start CodeBuddy login"})
+		return
+	}
+
+	state := authState.State
+	if strings.TrimSpace(state) == "" {
+		state = fmt.Sprintf("cb-%d", time.Now().UnixNano())
+	}
+	RegisterOAuthSession(state, "codebuddy")
+
+	go func() {
+		pollCtx, cancelPoll := context.WithCancel(ctx)
+		defer cancelPoll()
+		go watchOAuthSessionCancel(pollCtx, cancelPoll, state, "codebuddy")
+
+		log.Infof("Waiting for CodeBuddy authentication: %s", authState.AuthURL)
+		storage, errPoll := authSvc.PollForToken(pollCtx, authState.State)
+		if errPoll != nil {
+			if !IsOAuthSessionPending(state, "codebuddy") {
+				return
+			}
+			SetOAuthSessionError(state, oauthSessionErrorWithCause("Authentication failed", errPoll))
+			log.Errorf("CodeBuddy authentication failed: %v", errPoll)
+			return
+		}
+		if !IsOAuthSessionPending(state, "codebuddy") {
+			return
+		}
+
+		fileName := fmt.Sprintf("codebuddy-%s.json", storage.UserID)
+		label := storage.UserID
+		if label == "" {
+			label = "codebuddy-user"
+		}
+		record := &coreauth.Auth{
+			ID:       fileName,
+			Provider: "codebuddy",
+			FileName: fileName,
+			Label:    label,
+			Storage:  storage,
+			Metadata: map[string]any{
+				"access_token":  storage.AccessToken,
+				"refresh_token": storage.RefreshToken,
+				"user_id":       storage.UserID,
+				"domain":        storage.Domain,
+				"expires_in":    storage.ExpiresIn,
+				"region":        site.Name,
+			},
+		}
+		savedPath, errSave := h.saveOAuthTokenRecord(ctx, state, "codebuddy", record)
+		if errors.Is(errSave, errOAuthSessionNotPending) {
+			return
+		}
+		if errSave != nil {
+			log.Errorf("Failed to save CodeBuddy tokens: %v", errSave)
+			SetOAuthSessionError(state, "Failed to save tokens")
+			return
+		}
+
+		log.Infof("CodeBuddy authentication successful! Token saved to %s", savedPath)
+		CompleteOAuthSession(state)
+		CompleteOAuthSessionsByProvider("codebuddy")
+	}()
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "ok",
+		"url":    authState.AuthURL,
+		"state":  state,
+		"region": site.Name,
+	})
+}
+
 func (h *Handler) RequestGitHubToken(c *gin.Context) {
 	ctx := context.Background()
 

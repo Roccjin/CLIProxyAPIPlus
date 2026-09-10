@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codebuddy"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
@@ -24,9 +26,41 @@ import (
 )
 
 const (
-	codeBuddyChatPath = "/v2/chat/completions"
-	codeBuddyAuthType = "codebuddy"
+	codeBuddyChatPath                 = "/v2/chat/completions"
+	codeBuddyAuthType                 = "codebuddy"
+	codeBuddyDefaultSystemPrompt      = "You are a helpful assistant."
+	codeBuddyDefaultReasoningSummary  = "auto"
+	codeBuddyTransientProviderRetries = 1
 )
+
+// Official CLI chat bodies only send these fields. Open WebUI and similar
+// clients attach session/chat metadata that www.codebuddy.ai rejects with
+// 400/11128 ("Illegal API invocation from an unapproved channel").
+var codeBuddyChatAllowedFields = []string{
+	"model",
+	"messages",
+	"stream",
+	"stream_options",
+	"temperature",
+	"top_p",
+	"max_tokens",
+	"max_completion_tokens",
+	"stop",
+	"n",
+	"user",
+	"tools",
+	"tool_choice",
+	"parallel_tool_calls",
+	"functions",
+	"function_call",
+	"response_format",
+	"reasoning_effort",
+	"reasoning_summary",
+	"verbosity",
+	"thinking",
+	"presence_penalty",
+	"frequency_penalty",
+}
 
 // CodeBuddyExecutor handles requests to the CodeBuddy API.
 type CodeBuddyExecutor struct {
@@ -65,6 +99,7 @@ func (e *CodeBuddyExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth
 		return fmt.Errorf("codebuddy: missing access token")
 	}
 	e.applyHeaders(req, accessToken, userID, domain)
+	rewriteCodeBuddyRequestURL(req, domain)
 	return nil
 }
 
@@ -107,45 +142,15 @@ func (e *CodeBuddyExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
 	requestedModel := payloadRequestedModel(opts, req.Model)
 	translated = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel)
-	translated, _ = sjson.SetBytes(translated, "stream", true)
-	translated, _ = sjson.SetBytes(translated, "stream_options.include_usage", true)
 
 	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
 	if err != nil {
 		return resp, err
 	}
+	translated = prepareCodeBuddyChatPayload(translated, domain)
 
-	url := codebuddy.BaseURL + codeBuddyChatPath
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
+	httpResp, err := e.doCodeBuddyChat(ctx, auth, accessToken, userID, domain, translated)
 	if err != nil {
-		return resp, err
-	}
-	e.applyHeaders(httpReq, accessToken, userID, domain)
-	httpReq.Header.Set("Accept", "text/event-stream")
-	httpReq.Header.Set("Cache-Control", "no-cache")
-
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
-	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
-		URL:       url,
-		Method:    http.MethodPost,
-		Headers:   httpReq.Header.Clone(),
-		Body:      translated,
-		Provider:  e.Identifier(),
-		AuthID:    authID,
-		AuthLabel: authLabel,
-		AuthType:  authType,
-		AuthValue: authValue,
-	})
-
-	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
-	httpResp, err := httpClient.Do(httpReq)
-	if err != nil {
-		recordAPIResponseError(ctx, e.cfg, err)
 		return resp, err
 	}
 	defer func() {
@@ -153,15 +158,6 @@ func (e *CodeBuddyExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 			log.Errorf("codebuddy executor: close response body error: %v", errClose)
 		}
 	}()
-
-	recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	if !isHTTPSuccess(httpResp.StatusCode) {
-		b, _ := io.ReadAll(httpResp.Body)
-		appendAPIResponseChunk(ctx, e.cfg, b)
-		log.Debugf("codebuddy executor: upstream error status: %d, body: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
-		return resp, err
-	}
 
 	body, err := io.ReadAll(httpResp.Body)
 	if err != nil {
@@ -211,48 +207,10 @@ func (e *CodeBuddyExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 	if err != nil {
 		return nil, err
 	}
+	translated = prepareCodeBuddyChatPayload(translated, domain)
 
-	url := codebuddy.BaseURL + codeBuddyChatPath
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
+	httpResp, err := e.doCodeBuddyChat(ctx, auth, accessToken, userID, domain, translated)
 	if err != nil {
-		return nil, err
-	}
-	e.applyHeaders(httpReq, accessToken, userID, domain)
-	httpReq.Header.Set("Accept", "text/event-stream")
-	httpReq.Header.Set("Cache-Control", "no-cache")
-
-	var authID, authLabel, authType, authValue string
-	if auth != nil {
-		authID = auth.ID
-		authLabel = auth.Label
-		authType, authValue = auth.AccountInfo()
-	}
-	recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
-		URL:       url,
-		Method:    http.MethodPost,
-		Headers:   httpReq.Header.Clone(),
-		Body:      translated,
-		Provider:  e.Identifier(),
-		AuthID:    authID,
-		AuthLabel: authLabel,
-		AuthType:  authType,
-		AuthValue: authValue,
-	})
-
-	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
-	httpResp, err := httpClient.Do(httpReq)
-	if err != nil {
-		recordAPIResponseError(ctx, e.cfg, err)
-		return nil, err
-	}
-
-	recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
-	if !isHTTPSuccess(httpResp.StatusCode) {
-		b, _ := io.ReadAll(httpResp.Body)
-		appendAPIResponseChunk(ctx, e.cfg, b)
-		httpResp.Body.Close()
-		log.Debugf("codebuddy executor: upstream error status: %d, body: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
 		return nil, err
 	}
 
@@ -280,7 +238,8 @@ func (e *CodeBuddyExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 			if !bytes.HasPrefix(line, []byte("data:")) {
 				continue
 			}
-			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, bytes.Clone(line), &param)
+			normalized := normalizeCodeBuddyChatStreamLine(bytes.Clone(line))
+			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, normalized, &param)
 			for i := range chunks {
 				out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}
 			}
@@ -341,8 +300,250 @@ func (e *CodeBuddyExecutor) CountTokens(_ context.Context, _ *cliproxyauth.Auth,
 	return cliproxyexecutor.Response{}, fmt.Errorf("codebuddy: count tokens not supported")
 }
 
+func codeBuddyChatURL(domain string) string {
+	return codebuddy.APIBaseURLForDomain(domain) + codeBuddyChatPath
+}
+
+func (e *CodeBuddyExecutor) doCodeBuddyChat(ctx context.Context, auth *cliproxyauth.Auth, accessToken, userID, domain string, body []byte) (*http.Response, error) {
+	url := codeBuddyChatURL(domain)
+	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+
+	var authID, authLabel, authType, authValue string
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
+
+	var lastErr error
+	for attempt := 0; attempt <= codeBuddyTransientProviderRetries; attempt++ {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		e.applyHeaders(httpReq, accessToken, userID, domain)
+		httpReq.Header.Set("Cache-Control", "no-cache")
+		if attempt == 0 {
+			recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
+				URL:       url,
+				Method:    http.MethodPost,
+				Headers:   httpReq.Header.Clone(),
+				Body:      body,
+				Provider:  e.Identifier(),
+				AuthID:    authID,
+				AuthLabel: authLabel,
+				AuthType:  authType,
+				AuthValue: authValue,
+			})
+		}
+
+		httpResp, err := httpClient.Do(httpReq)
+		if err != nil {
+			recordAPIResponseError(ctx, e.cfg, err)
+			return nil, err
+		}
+		recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+		if isHTTPSuccess(httpResp.StatusCode) {
+			return httpResp, nil
+		}
+
+		errBody, _ := io.ReadAll(httpResp.Body)
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("codebuddy executor: close error response body: %v", errClose)
+		}
+		appendAPIResponseChunk(ctx, e.cfg, errBody)
+		summary := summarizeErrorBody(httpResp.Header.Get("Content-Type"), errBody)
+		lastErr = statusErr{code: httpResp.StatusCode, msg: string(errBody)}
+		if attempt < codeBuddyTransientProviderRetries && isCodeBuddyTransientProviderError(httpResp.StatusCode, errBody) {
+			log.Warnf("codebuddy executor: transient upstream error status: %d, body: %s; retrying", httpResp.StatusCode, summary)
+			continue
+		}
+		log.Warnf("codebuddy executor: upstream error status: %d, body: %s", httpResp.StatusCode, summary)
+		return nil, lastErr
+	}
+	return nil, lastErr
+}
+
+func isCodeBuddyTransientProviderError(status int, body []byte) bool {
+	if status != http.StatusInternalServerError && status != http.StatusBadGateway && status != http.StatusServiceUnavailable {
+		return false
+	}
+	code := gjson.GetBytes(body, "code")
+	if code.Int() == 11134 || code.String() == "11134" {
+		return true
+	}
+	msg := strings.ToLower(strings.Join([]string{
+		code.String(),
+		gjson.GetBytes(body, "msg").String(),
+		gjson.GetBytes(body, "message").String(),
+		gjson.GetBytes(body, "extError.code").String(),
+		gjson.GetBytes(body, "extError.message").String(),
+	}, " "))
+	return strings.Contains(msg, "temporarily unavailable") || strings.Contains(msg, "service_unavailable")
+}
+
+// normalizeCodeBuddyChatStreamLine rewrites CodeBuddy international SSE chunks.
+// www.codebuddy.ai /v2/chat/completions streams chat-style choices/delta payloads
+// with object="response". The OpenAI Responses translator only accepts
+// object="chat.completion.chunk", so unnormalized streams look empty and /v1/responses
+// fails after the upstream 200.
+func normalizeCodeBuddyChatStreamLine(line []byte) []byte {
+	dataIdx := bytes.Index(line, []byte("data:"))
+	if dataIdx < 0 {
+		return line
+	}
+	jsonStart := dataIdx + len("data:")
+	for jsonStart < len(line) && (line[jsonStart] == ' ' || line[jsonStart] == '\t') {
+		jsonStart++
+	}
+	payload := bytes.TrimSpace(line[jsonStart:])
+	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+		return line
+	}
+
+	updated := payload
+	changed := false
+	if obj := gjson.GetBytes(updated, "object"); obj.Exists() {
+		switch strings.TrimSpace(obj.String()) {
+		case "response", "chat.completion":
+			next, err := sjson.SetBytes(updated, "object", "chat.completion.chunk")
+			if err == nil {
+				updated = next
+				changed = true
+			}
+		}
+	}
+
+	choiceCount := int(gjson.GetBytes(updated, "choices.#").Int())
+	for i := 0; i < choiceCount; i++ {
+		prefix := fmt.Sprintf("choices.%d", i)
+		if tcs := gjson.GetBytes(updated, prefix+".delta.tool_calls"); tcs.Exists() && tcs.IsArray() && len(tcs.Array()) == 0 {
+			if next, err := sjson.DeleteBytes(updated, prefix+".delta.tool_calls"); err == nil {
+				updated = next
+				changed = true
+			}
+		}
+		if extra := gjson.GetBytes(updated, prefix+".delta.extra_fields"); extra.Exists() {
+			if next, err := sjson.DeleteBytes(updated, prefix+".delta.extra_fields"); err == nil {
+				updated = next
+				changed = true
+			}
+		}
+		if fc := gjson.GetBytes(updated, prefix+".delta.function_call"); fc.Exists() && fc.Type == gjson.Null {
+			if next, err := sjson.DeleteBytes(updated, prefix+".delta.function_call"); err == nil {
+				updated = next
+				changed = true
+			}
+		}
+		if fr := gjson.GetBytes(updated, prefix+".finish_reason"); fr.Exists() && fr.Type == gjson.String && strings.TrimSpace(fr.String()) == "" {
+			if next, err := sjson.SetBytes(updated, prefix+".finish_reason", nil); err == nil {
+				updated = next
+				changed = true
+			}
+		}
+	}
+
+	if !changed {
+		return line
+	}
+	out := make([]byte, 0, jsonStart+len(updated))
+	out = append(out, line[:jsonStart]...)
+	out = append(out, updated...)
+	return out
+}
+
+// prepareCodeBuddyChatPayload matches the international CLI chat body:
+// stream + include_usage, reasoning_summary=auto, and a leading system turn.
+func prepareCodeBuddyChatPayload(payload []byte, domain string) []byte {
+	if len(payload) == 0 {
+		return payload
+	}
+	payload, _ = sjson.SetBytes(payload, "stream", true)
+	payload, _ = sjson.SetBytes(payload, "stream_options.include_usage", true)
+	if !gjson.GetBytes(payload, "reasoning_summary").Exists() {
+		payload, _ = sjson.SetBytes(payload, "reasoning_summary", codeBuddyDefaultReasoningSummary)
+	}
+	payload = ensureCodeBuddySystemMessage(payload, domain)
+	return sanitizeCodeBuddyChatPayload(payload)
+}
+
+func sanitizeCodeBuddyChatPayload(payload []byte) []byte {
+	root := gjson.ParseBytes(payload)
+	if !root.IsObject() {
+		return payload
+	}
+	out := []byte(`{}`)
+	for _, key := range codeBuddyChatAllowedFields {
+		value := root.Get(key)
+		if !value.Exists() {
+			continue
+		}
+		next, err := sjson.SetRawBytes(out, key, []byte(value.Raw))
+		if err != nil {
+			return payload
+		}
+		out = next
+	}
+	return out
+}
+
+// ensureCodeBuddySystemMessage prepends a system turn when the international
+// gateway would reject the payload. www.codebuddy.ai returns 400/11128
+// ("first message is not system prompt") when messages[0] is not role=system.
+// /v1/responses often has no instructions field, so the OpenAI translator
+// emits a user/developer turn first. CN does not require this.
+func ensureCodeBuddySystemMessage(payload []byte, domain string) []byte {
+	if len(payload) == 0 || !codebuddy.IsGlobalDomain(domain) {
+		return payload
+	}
+	messages := gjson.GetBytes(payload, "messages")
+	if !messages.Exists() || !messages.IsArray() {
+		return payload
+	}
+	arr := messages.Array()
+	if len(arr) == 0 {
+		return payload
+	}
+	if strings.EqualFold(arr[0].Get("role").String(), "system") {
+		return payload
+	}
+
+	var b strings.Builder
+	b.Grow(len(messages.Raw) + 64)
+	b.WriteString(`[{"role":"system","content":`)
+	sysContent, _ := json.Marshal(codeBuddyDefaultSystemPrompt)
+	b.Write(sysContent)
+	b.WriteByte('}')
+	for _, msg := range arr {
+		b.WriteByte(',')
+		b.WriteString(msg.Raw)
+	}
+	b.WriteByte(']')
+	out, err := sjson.SetRawBytes(payload, "messages", []byte(b.String()))
+	if err != nil {
+		return payload
+	}
+	return out
+}
+
+func rewriteCodeBuddyRequestURL(req *http.Request, domain string) {
+	if req == nil || req.URL == nil {
+		return
+	}
+	base, err := url.Parse(codebuddy.APIBaseURLForDomain(domain))
+	if err != nil || base.Host == "" {
+		return
+	}
+	req.URL.Scheme = base.Scheme
+	req.URL.Host = base.Host
+	req.Host = base.Host
+}
+
 // applyHeaders sets required headers for CodeBuddy API requests.
 func (e *CodeBuddyExecutor) applyHeaders(req *http.Request, accessToken, userID, domain string) {
+	requestID := strings.ReplaceAll(uuid.NewString(), "-", "")
+	conversationID := uuid.NewString()
+	messageID := strings.ReplaceAll(uuid.NewString(), "-", "")
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -352,8 +553,17 @@ func (e *CodeBuddyExecutor) applyHeaders(req *http.Request, accessToken, userID,
 	req.Header.Set("X-Product", "SaaS")
 	req.Header.Set("X-IDE-Type", "CLI")
 	req.Header.Set("X-IDE-Name", "CLI")
-	req.Header.Set("X-IDE-Version", "2.63.2")
+	req.Header.Set("X-IDE-Version", codebuddy.ClientVersion)
+	req.Header.Set("X-Agent-Intent", "craft")
+	req.Header.Set("X-Agent-Purpose", "conversation")
+	req.Header.Set("X-Agent-Type", "main")
+	req.Header.Set("X-Private-Data", "false")
+	req.Header.Set("x-codebuddy-request", "1")
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	req.Header.Set("X-Request-ID", requestID)
+	req.Header.Set("X-Conversation-ID", conversationID)
+	req.Header.Set("X-Conversation-Request-ID", requestID)
+	req.Header.Set("X-Conversation-Message-ID", messageID)
 }
 
 type openAIChatStreamChoiceAccumulator struct {

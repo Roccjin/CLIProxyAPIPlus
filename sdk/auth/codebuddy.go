@@ -46,14 +46,23 @@ func (a CodeBuddyAuthenticator) Login(ctx context.Context, cfg *config.Config, o
 		ctx = context.Background()
 	}
 
-	authSvc := codebuddy.NewCodeBuddyAuth(cfg)
+	region := ""
+	if opts.Metadata != nil {
+		region = opts.Metadata["region"]
+	}
+	site, err := codebuddy.ParseSite(region)
+	if err != nil {
+		return nil, err
+	}
+
+	authSvc := codebuddy.NewCodeBuddyAuthForSite(cfg, site)
 
 	authState, err := authSvc.FetchAuthState(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("codebuddy: failed to fetch auth state: %w", err)
 	}
 
-	fmt.Printf("\nPlease open the following URL in your browser to login:\n\n  %s\n\n", authState.AuthURL)
+	fmt.Printf("\nPlease open the following URL in your browser to login (%s):\n\n  %s\n\n", site.Name, authState.AuthURL)
 	fmt.Println("Waiting for authorization...")
 
 	if !opts.NoBrowser {
@@ -90,6 +99,7 @@ func (a CodeBuddyAuthenticator) Login(ctx context.Context, cfg *config.Config, o
 			"user_id":       storage.UserID,
 			"domain":        storage.Domain,
 			"expires_in":    storage.ExpiresIn,
+			"region":        site.Name,
 		},
 	}, nil
 }

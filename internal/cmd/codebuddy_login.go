@@ -26,6 +26,9 @@ func DoCodeBuddyLogin(cfg *config.Config, options *LoginOptions) {
 		NoBrowser: options.NoBrowser,
 		Metadata:  map[string]string{},
 	}
+	if region := options.CodeBuddyRegion; region != "" {
+		authOpts.Metadata["region"] = region
+	}
 
 	record, savedPath, err := manager.Login(context.Background(), "codebuddy", cfg, authOpts)
 	if err != nil {
