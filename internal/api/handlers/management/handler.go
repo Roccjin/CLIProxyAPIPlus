@@ -56,6 +56,7 @@ type Handler struct {
 	logDir                  string
 	postAuthHook            coreauth.PostAuthHook
 	postAuthPersistHook     coreauth.PostAuthHook
+	authModelsRefreshHook   AuthModelsRefreshFunc
 	pluginHost              *pluginhost.Host
 	configReloadHook        func(context.Context, *config.Config)
 	pluginStoreRegistryURL  string
@@ -263,6 +264,15 @@ func (h *Handler) SetPostAuthHook(hook coreauth.PostAuthHook) {
 // SetPostAuthPersistHook registers a hook to be called after auth persistence.
 func (h *Handler) SetPostAuthPersistHook(hook coreauth.PostAuthHook) {
 	h.postAuthPersistHook = hook
+}
+
+// SetAuthModelsRefreshHook registers the service callback used by management
+// model-refresh endpoints so prefix/excluded-model/alias rules stay applied.
+func (h *Handler) SetAuthModelsRefreshHook(hook AuthModelsRefreshFunc) {
+	if h == nil {
+		return
+	}
+	h.authModelsRefreshHook = hook
 }
 
 // Middleware enforces access control for management endpoints.

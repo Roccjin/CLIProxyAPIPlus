@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 )
 
 // KiroTokenStorage holds the persistent token data for Kiro authentication.
@@ -46,7 +48,12 @@ func (s *KiroTokenStorage) SaveTokenToFile(authFilePath string) error {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	data, err := json.MarshalIndent(s, "", "  ")
+	payload, errMerge := misc.MergeAndPreserveAuthFile(s, nil, authFilePath)
+	if errMerge != nil {
+		return fmt.Errorf("failed to merge metadata: %w", errMerge)
+	}
+
+	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal token storage: %w", err)
 	}

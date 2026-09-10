@@ -202,6 +202,7 @@ func (ts *QoderTokenStorage) SaveTokenToFile(authFilePath string) error {
 	if errMerge != nil {
 		return fmt.Errorf("failed to merge metadata: %w", errMerge)
 	}
+	misc.PreserveAuthFileMetadata(authFilePath, data)
 
 	payload, errMarshal := json.Marshal(data)
 	if errMarshal != nil {

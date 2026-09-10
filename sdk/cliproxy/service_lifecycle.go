@@ -121,6 +121,9 @@ func (s *Service) Run(ctx context.Context) error {
 
 	// handlers no longer depend on legacy clients; pass nil slice initially
 	s.server = api.NewServer(s.cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
+	if s.server != nil {
+		s.server.SetAuthModelsRefreshHook(s.refreshAuthFileModels)
+	}
 	s.syncPluginRuntimeConfig(ctx)
 	if homeEnabled {
 		s.syncPluginModelRuntime(ctx)

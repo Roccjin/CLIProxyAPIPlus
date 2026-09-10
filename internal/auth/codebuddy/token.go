@@ -50,6 +50,11 @@ func (s *CodeBuddyTokenStorage) SaveTokenToFile(authFilePath string) error {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
+	data, errMerge := misc.MergeAndPreserveAuthFile(s, nil, authFilePath)
+	if errMerge != nil {
+		return fmt.Errorf("failed to merge metadata: %w", errMerge)
+	}
+
 	f, err := os.OpenFile(authFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to create token file: %w", err)
@@ -58,7 +63,7 @@ func (s *CodeBuddyTokenStorage) SaveTokenToFile(authFilePath string) error {
 		_ = f.Close()
 	}()
 
-	if err = json.NewEncoder(f).Encode(s); err != nil {
+	if err = json.NewEncoder(f).Encode(data); err != nil {
 		return fmt.Errorf("failed to write token to file: %w", err)
 	}
 	return nil

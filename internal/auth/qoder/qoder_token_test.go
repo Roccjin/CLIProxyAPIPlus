@@ -119,3 +119,41 @@ func TestSaveTokenToFile_StaleMetadataDoesNotOverwriteToken(t *testing.T) {
 		t.Fatalf("expected model_configs to persist, got %s", raw)
 	}
 }
+
+func TestSaveTokenToFile_PreservesDisabledWithoutMetadata(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "qoder-user-pat-test.json")
+	seed := []byte(`{"type":"qoder","token":"jt-old","personal_token":"pt-testtoken","auth_mode":"pat","email":"user@example.com","disabled":true,"prefix":"team"}`)
+	if err := os.WriteFile(path, seed, 0o600); err != nil {
+		t.Fatalf("seed auth file: %v", err)
+	}
+
+	storage := &QoderTokenStorage{
+		AuthMode:      AuthModePAT,
+		PersonalToken: "pt-testtoken",
+		Token:         "jt-rotated",
+		Email:         "user@example.com",
+		Type:          "qoder",
+	}
+	if err := storage.SaveTokenToFile(path); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var saved map[string]any
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if saved["token"] != "jt-rotated" {
+		t.Fatalf("token = %v, want jt-rotated", saved["token"])
+	}
+	if disabled, _ := saved["disabled"].(bool); !disabled {
+		t.Fatalf("disabled = %v, want true; body=%s", saved["disabled"], raw)
+	}
+	if saved["prefix"] != "team" {
+		t.Fatalf("prefix = %v, want team", saved["prefix"])
+	}
+}

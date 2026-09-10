@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	log "github.com/sirupsen/logrus"
 )
@@ -185,6 +186,8 @@ func (s *Server) registerManagementRoutes() {
 
 		mgmt.GET("/auth-files", s.mgmt.ListAuthFiles)
 		mgmt.GET("/auth-files/models", s.mgmt.GetAuthFileModels)
+		mgmt.POST("/auth-files/models/refresh", s.mgmt.RefreshAuthFileModels)
+		mgmt.POST("/auth-files/models/refresh-batch", s.mgmt.RefreshAuthFileModelsBatch)
 		mgmt.GET("/model-definitions/:channel", s.mgmt.GetStaticModelDefinitions)
 		mgmt.GET("/auth-files/download", s.mgmt.DownloadAuthFile)
 		mgmt.POST("/auth-files", s.mgmt.UploadAuthFile)
@@ -218,6 +221,15 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 		mgmt.DELETE("/oauth-session", s.mgmt.CancelAuthSession)
 	}
+}
+
+// SetAuthModelsRefreshHook registers the service callback used to live-refresh
+// qoder/codebuddy model catalogs from management endpoints.
+func (s *Server) SetAuthModelsRefreshHook(hook managementHandlers.AuthModelsRefreshFunc) {
+	if s == nil || s.mgmt == nil {
+		return
+	}
+	s.mgmt.SetAuthModelsRefreshHook(hook)
 }
 
 func (s *Server) managementAvailabilityMiddleware() gin.HandlerFunc {

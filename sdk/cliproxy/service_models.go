@@ -2,6 +2,7 @@ package cliproxy
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -290,6 +291,68 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	}
 
 	GlobalModelRegistry().UnregisterClient(a.ID)
+}
+
+// refreshAuthFileModels live-fetches qoder/codebuddy catalogs and rebinds the
+// registry with the same prefix/exclusion/alias rules as startup registration.
+func (s *Service) refreshAuthFileModels(ctx context.Context, a *coreauth.Auth) ([]*ModelInfo, error) {
+	if s == nil {
+		return nil, fmt.Errorf("service is nil")
+	}
+	if a == nil || strings.TrimSpace(a.ID) == "" {
+		return nil, fmt.Errorf("auth file not found")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	provider := strings.ToLower(strings.TrimSpace(a.Provider))
+	var (
+		models []*ModelInfo
+		err    error
+	)
+	switch provider {
+	case "qoder":
+		models, err = executor.RefreshQoderModels(ctx, a, s.cfg)
+	case "codebuddy":
+		models, err = executor.RefreshCodeBuddyModels(ctx, a, s.cfg)
+	default:
+		return nil, fmt.Errorf("model refresh is only supported for qoder and codebuddy")
+	}
+	if err != nil {
+		return nil, err
+	}
+	s.bindFetchedModelsForAuth(ctx, a, provider, models)
+	return registry.GetGlobalRegistry().GetModelsForClient(a.ID), nil
+}
+
+func (s *Service) bindFetchedModelsForAuth(ctx context.Context, a *coreauth.Auth, provider string, models []*ModelInfo) {
+	if s == nil || a == nil || a.ID == "" {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if a.Disabled {
+		GlobalModelRegistry().UnregisterClient(a.ID)
+		if s.coreManager != nil {
+			s.coreManager.RefreshSchedulerEntry(a.ID)
+		}
+		return
+	}
+	authKind := a.AuthKind()
+	excluded := s.effectiveAuthExcludedModels(a, provider, authKind, nil)
+	models = applyExcludedModels(models, excluded)
+	models = applyOAuthModelAliasForAuth(s.cfg, provider, authKind, a.Attributes, models)
+	models = s.appendPluginModels(provider, models)
+	if len(models) > 0 {
+		s.registerResolvedModelsForAuth(a, provider, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
+	} else {
+		GlobalModelRegistry().UnregisterClient(a.ID)
+	}
+	if s.coreManager != nil {
+		s.coreManager.ReconcileRegistryModelStates(ctx, a.ID)
+		s.coreManager.RefreshSchedulerEntry(a.ID)
+	}
 }
 
 // refreshModelRegistrationForAuth re-applies the latest model registration for

@@ -46,7 +46,7 @@ func (ts *TokenStorage) SaveTokenToFile(authFilePath string) error {
 		return fmt.Errorf("xai token storage: create directory: %w", errMkdirAll)
 	}
 
-	data, errMerge := misc.MergeMetadata(ts, ts.Metadata)
+	data, errMerge := misc.MergeAndPreserveAuthFile(ts, ts.Metadata, authFilePath)
 	if errMerge != nil {
 		return fmt.Errorf("xai token storage: merge metadata: %w", errMerge)
 	}

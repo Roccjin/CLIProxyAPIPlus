@@ -258,6 +258,12 @@ func (a *Auth) RecentRequestsSnapshot(now time.Time) []RecentRequestBucket {
 	return out
 }
 
+// IsDisabled reports whether the auth was turned off by the operator.
+// Quota cooldown and transient unavailability are not treated as disabled.
+func (a *Auth) IsDisabled() bool {
+	return a != nil && (a.Disabled || a.Status == StatusDisabled)
+}
+
 // Clone shallow copies the Auth structure, duplicating maps to avoid accidental mutation.
 func (a *Auth) Clone() *Auth {
 	if a == nil {

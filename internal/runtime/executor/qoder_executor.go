@@ -893,21 +893,57 @@ func FetchQoderModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 		}
 	}
 
-	models, expired := fetchQoderModelsOnce(ctx, auth, cfg, storage)
+	models, expired := fetchQoderModelsOnce(ctx, auth, cfg, storage, false)
 	if len(models) > 0 {
 		return models
 	}
 	if expired && storage.IsPAT() {
 		if err := qoderauth.RefreshPATSession(ctx, cfg, storage, qoderAuthFilePath(auth)); err != nil {
 			log.Warnf("qoder: PAT refresh after model list 403: %v", err)
-		} else if retry, _ := fetchQoderModelsOnce(ctx, auth, cfg, storage); len(retry) > 0 {
+		} else if retry, _ := fetchQoderModelsOnce(ctx, auth, cfg, storage, false); len(retry) > 0 {
 			return retry
 		}
 	}
 	return registry.GetQoderModels()
 }
 
-func fetchQoderModelsOnce(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config, storage *qoderauth.QoderTokenStorage) ([]*registry.ModelInfo, bool) {
+// RefreshQoderModels live-fetches /algo/api/v2/model/list, always persists
+// model_configs, and returns an error instead of falling back to the static
+// catalog. Used by the management "refresh supported models" action.
+func RefreshQoderModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) ([]*registry.ModelInfo, error) {
+	if auth == nil {
+		return nil, fmt.Errorf("qoder: auth is nil")
+	}
+	storage, ok := auth.Storage.(*qoderauth.QoderTokenStorage)
+	if !ok || storage == nil || strings.TrimSpace(storage.Token) == "" {
+		return nil, fmt.Errorf("qoder: missing session token")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if storage.IsPAT() {
+		if err := qoderauth.RefreshTokenIfNeeded(ctx, cfg, storage, 600, qoderAuthFilePath(auth)); err != nil {
+			log.Warnf("qoder: PAT refresh before model list: %v", err)
+		}
+	}
+
+	models, expired := fetchQoderModelsOnce(ctx, auth, cfg, storage, true)
+	if len(models) > 0 {
+		return models, nil
+	}
+	if expired && storage.IsPAT() {
+		if err := qoderauth.RefreshPATSession(ctx, cfg, storage, qoderAuthFilePath(auth)); err != nil {
+			return nil, fmt.Errorf("qoder: PAT refresh after model list 403: %w", err)
+		}
+		if retry, _ := fetchQoderModelsOnce(ctx, auth, cfg, storage, true); len(retry) > 0 {
+			return retry, nil
+		}
+	}
+	return nil, fmt.Errorf("qoder: failed to refresh model list from upstream")
+}
+
+func fetchQoderModelsOnce(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config, storage *qoderauth.QoderTokenStorage, persist bool) ([]*registry.ModelInfo, bool) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
@@ -954,10 +990,83 @@ func fetchQoderModelsOnce(ctx context.Context, auth *cliproxyauth.Auth, cfg *con
 		return nil, isQoderAuthExpiredMessage(string(body)) || resp.StatusCode == http.StatusForbidden
 	}
 
+	models, configs, errParse := parseQoderModelListBody(body)
+	if errParse != nil {
+		log.Warnf("qoder: %v", errParse)
+		return nil, false
+	}
+
+	hadCache := len(storage.ModelConfigKeys()) > 0
+	storage.SetModelConfigs(configs)
+	// Automatic fetches persist only when the cache was empty so chat
+	// traffic does not rewrite the auth file on every /model/list call.
+	// Manual refresh always persists so the new catalog survives restart.
+	if persist || !hadCache {
+		if path := qoderAuthFilePath(auth); path != "" {
+			if err := storage.SaveTokenToFile(path); err != nil {
+				log.Warnf("qoder: persist model configs: %v", err)
+			}
+		}
+	}
+
+	log.Infof("qoder: fetched %d models from /algo/api/v2/model/list", len(models))
+
+	// Fetch usage alongside models so the management UI has fresh credit data.
+	// Skip when a snapshot is already cached — listing models after every
+	// chat must not mint a new OpenAPI jt- or rewrite the auth file.
+	if storage.GetUsageInfo() == nil {
+		go FetchQoderUsage(context.Background(), auth, cfg)
+	}
+
+	return models, false
+}
+
+// stableHash returns a deterministic hex identifier from the given inputs.
+func stableHash(prefix string, inputs ...string) string {
+	h := sha256.New()
+	h.Write([]byte(prefix))
+	for _, in := range inputs {
+		h.Write([]byte{0})
+		h.Write([]byte(in))
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// stableChatRecordID produces a deterministic chat_record_id from the
+// request payload so retries with identical content hit upstream caches.
+func stableChatRecordID(model string, messages []interface{}, toolsRaw interface{}, maxTokens int) string {
+	h := sha256.New()
+	h.Write([]byte("qoder-record"))
+	h.Write([]byte{0})
+	h.Write([]byte(model))
+	for _, msg := range messages {
+		m, _ := msg.(map[string]interface{})
+		if m == nil {
+			continue
+		}
+		if role, _ := m["role"].(string); role != "" {
+			h.Write([]byte{0})
+			h.Write([]byte(role))
+		}
+		if content, _ := m["content"].(string); content != "" {
+			h.Write([]byte{0})
+			h.Write([]byte(content))
+		}
+	}
+	if toolsRaw != nil {
+		toolsJSON, _ := json.Marshal(toolsRaw)
+		h.Write([]byte{0})
+		h.Write(toolsJSON)
+	}
+	h.Write([]byte{0})
+	h.Write([]byte(fmt.Sprintf("mt=%d", maxTokens)))
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+func parseQoderModelListBody(body []byte) ([]*registry.ModelInfo, map[string]json.RawMessage, error) {
 	chat := gjson.GetBytes(body, "chat")
 	if !chat.Exists() || !chat.IsArray() {
-		log.Warnf("qoder: model list response missing 'chat' array")
-		return nil, false
+		return nil, nil, fmt.Errorf("model list response missing 'chat' array")
 	}
 
 	now := time.Now().Unix()
@@ -1028,77 +1137,9 @@ func fetchQoderModelsOnce(ctx context.Context, auth *cliproxyauth.Auth, cfg *con
 	})
 
 	if len(models) == 0 {
-		log.Warn("qoder: model list returned no enabled models, falling back to static")
-		return nil, false
+		return nil, nil, fmt.Errorf("model list returned no enabled models")
 	}
-
-	hadCache := len(storage.ModelConfigKeys()) > 0
-	storage.SetModelConfigs(configs)
-	// Persist only when the on-disk/in-memory cache was empty. Writing on
-	// every /model/list fetch races the file watcher: MarkResult persist
-	// already saves after each chat, the watcher re-registers every Qoder
-	// auth, and a second SaveTokenToFile loops (two "Saving credentials"
-	// lines per account per Q&A).
-	if !hadCache {
-		if path := qoderAuthFilePath(auth); path != "" {
-			if err := storage.SaveTokenToFile(path); err != nil {
-				log.Warnf("qoder: persist model configs: %v", err)
-			}
-		}
-	}
-
-	log.Infof("qoder: fetched %d models from /algo/api/v2/model/list", len(models))
-
-	// Fetch usage alongside models so the management UI has fresh credit data.
-	// Skip when a snapshot is already cached — listing models after every
-	// chat must not mint a new OpenAPI jt- or rewrite the auth file.
-	if storage.GetUsageInfo() == nil {
-		go FetchQoderUsage(context.Background(), auth, cfg)
-	}
-
-	return models, false
-}
-
-// stableHash returns a deterministic hex identifier from the given inputs.
-func stableHash(prefix string, inputs ...string) string {
-	h := sha256.New()
-	h.Write([]byte(prefix))
-	for _, in := range inputs {
-		h.Write([]byte{0})
-		h.Write([]byte(in))
-	}
-	return hex.EncodeToString(h.Sum(nil))[:16]
-}
-
-// stableChatRecordID produces a deterministic chat_record_id from the
-// request payload so retries with identical content hit upstream caches.
-func stableChatRecordID(model string, messages []interface{}, toolsRaw interface{}, maxTokens int) string {
-	h := sha256.New()
-	h.Write([]byte("qoder-record"))
-	h.Write([]byte{0})
-	h.Write([]byte(model))
-	for _, msg := range messages {
-		m, _ := msg.(map[string]interface{})
-		if m == nil {
-			continue
-		}
-		if role, _ := m["role"].(string); role != "" {
-			h.Write([]byte{0})
-			h.Write([]byte(role))
-		}
-		if content, _ := m["content"].(string); content != "" {
-			h.Write([]byte{0})
-			h.Write([]byte(content))
-		}
-	}
-	if toolsRaw != nil {
-		toolsJSON, _ := json.Marshal(toolsRaw)
-		h.Write([]byte{0})
-		h.Write(toolsJSON)
-	}
-	h.Write([]byte{0})
-	h.Write([]byte(fmt.Sprintf("mt=%d", maxTokens)))
-	return hex.EncodeToString(h.Sum(nil))[:16]
+	return models, configs, nil
 }
 
 func truncate(s string, n int) string {

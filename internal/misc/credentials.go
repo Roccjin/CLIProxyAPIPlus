@@ -1,8 +1,10 @@
 package misc
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -58,4 +60,68 @@ func MergeMetadata(source any, metadata map[string]any) (map[string]any, error) 
 	}
 
 	return data, nil
+}
+
+// MergeAndPreserveAuthFile serializes source, overlays metadata, then copies
+// non-credential keys from the existing auth JSON when the outgoing map does
+// not already define them. Use this from SaveTokenToFile so fields such as
+// "disabled", "prefix", and "proxy_url" survive refresh writes that skip
+// FileTokenStore.Save.
+func MergeAndPreserveAuthFile(source any, metadata map[string]any, authFilePath string) (map[string]any, error) {
+	data, err := MergeMetadata(source, metadata)
+	if err != nil {
+		return nil, err
+	}
+	if data == nil {
+		data = make(map[string]any)
+	}
+	PreserveAuthFileMetadata(authFilePath, data)
+	return data, nil
+}
+
+// PreserveAuthFileMetadata copies keys from the existing auth JSON into data
+// when data does not already contain them. Credential and token-lifecycle keys
+// are never copied from disk so a refresh cannot resurrect stale secrets.
+func PreserveAuthFileMetadata(authFilePath string, data map[string]any) {
+	if data == nil {
+		return
+	}
+	authFilePath = strings.TrimSpace(authFilePath)
+	if authFilePath == "" {
+		return
+	}
+	raw, err := os.ReadFile(authFilePath)
+	if err != nil || len(bytes.TrimSpace(raw)) == 0 {
+		return
+	}
+	var existing map[string]any
+	if err = json.Unmarshal(raw, &existing); err != nil || len(existing) == 0 {
+		return
+	}
+	for key, value := range existing {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		if _, exists := data[key]; exists {
+			continue
+		}
+		if isAuthCredentialKey(key) {
+			continue
+		}
+		data[key] = value
+	}
+}
+
+func isAuthCredentialKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "access_token", "refresh_token", "id_token", "session_id",
+		"token", "personal_token", "openapi_job_token", "machine_token",
+		"api_key", "cookie", "client_secret", "kilocodetoken",
+		"expired", "last_refresh", "expires_in", "expire_time",
+		"expires_at", "expiresat", "timestamp", "token_type", "user_code",
+		"verification_uri", "verification_uri_complete":
+		return true
+	default:
+		return false
+	}
 }

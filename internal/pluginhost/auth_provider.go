@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -442,6 +443,13 @@ func (s *pluginTokenStorage) SaveTokenToFile(path string) error {
 	payload, errPayload := mergedStorageJSON(s.rawJSON, s.meta, s.provider)
 	if errPayload != nil {
 		return errPayload
+	}
+	var data map[string]any
+	if errUnmarshal := json.Unmarshal(payload, &data); errUnmarshal == nil && data != nil {
+		misc.PreserveAuthFileMetadata(path, data)
+		if preserved, errMarshal := json.Marshal(data); errMarshal == nil {
+			payload = preserved
+		}
 	}
 	if len(bytes.TrimSpace(payload)) == 0 {
 		return fmt.Errorf("plugin token storage payload is empty")

@@ -112,7 +112,7 @@ func (m *Manager) queueRefreshUnschedule(authID string) {
 }
 
 func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {
-	if a == nil {
+	if a == nil || a.IsDisabled() {
 		return false
 	}
 	if hasUnauthorizedAuthFailure(a) {
@@ -519,6 +519,9 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	m.mu.RUnlock()
 	if auth == nil || exec == nil {
 		return nil, errors.New("auth or executor not found")
+	}
+	if auth.IsDisabled() {
+		return auth.Clone(), nil
 	}
 
 	// Another request may already have refreshed this credential.

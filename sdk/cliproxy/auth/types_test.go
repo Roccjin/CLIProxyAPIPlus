@@ -8,6 +8,22 @@ import (
 	"time"
 )
 
+func TestAuthIsDisabled(t *testing.T) {
+	var unset *Auth
+	if unset.IsDisabled() {
+		t.Fatal("nil auth should not be disabled")
+	}
+	if (&Auth{}).IsDisabled() {
+		t.Fatal("empty auth should not be disabled")
+	}
+	if !(&Auth{Disabled: true}).IsDisabled() {
+		t.Fatal("Disabled flag should disable auth")
+	}
+	if !(&Auth{Status: StatusDisabled}).IsDisabled() {
+		t.Fatal("StatusDisabled should disable auth")
+	}
+}
+
 func TestExpirationTimeFromExpireTime(t *testing.T) {
 	ms := time.Now().Add(24 * time.Hour).UnixMilli()
 	auth := &Auth{Metadata: map[string]any{"expire_time": float64(ms)}}

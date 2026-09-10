@@ -60,7 +60,7 @@ func (ts *GeminiTokenStorage) SaveTokenToFile(authFilePath string) error {
 	misc.LogSavingCredentials(authFilePath)
 	ts.Type = "gemini"
 	// Merge metadata using helper
-	data, errMerge := misc.MergeMetadata(ts, ts.Metadata)
+	data, errMerge := misc.MergeAndPreserveAuthFile(ts, ts.Metadata, authFilePath)
 	if errMerge != nil {
 		return fmt.Errorf("failed to merge metadata: %w", errMerge)
 	}

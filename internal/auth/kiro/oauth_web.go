@@ -962,20 +962,8 @@ func (h *OAuthWebHandler) handleManualRefresh(c *gin.Context) {
 			storage.ProfileArn = tokenData.ProfileArn
 		}
 
-		// Write updated token back to file
-		updatedData, err := json.MarshalIndent(storage, "", "  ")
-		if err != nil {
-			errors = append(errors, fmt.Sprintf("%s: marshal error - %v", name, err))
-			continue
-		}
-
-		tmpFile := filePath + ".tmp"
-		if err := os.WriteFile(tmpFile, updatedData, 0600); err != nil {
+		if err := storage.SaveTokenToFile(filePath); err != nil {
 			errors = append(errors, fmt.Sprintf("%s: write error - %v", name, err))
-			continue
-		}
-		if err := os.Rename(tmpFile, filePath); err != nil {
-			errors = append(errors, fmt.Sprintf("%s: rename error - %v", name, err))
 			continue
 		}
 

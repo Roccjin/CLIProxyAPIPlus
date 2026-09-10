@@ -90,6 +90,49 @@ func TestManager_RefreshAuthUnauthorizedFailureStopsAutoRefreshRetry(t *testing.
 	}
 }
 
+func TestManager_RefreshAuth_SkipsDisabledAuth(t *testing.T) {
+	ctx := context.Background()
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	exec := &countingRefreshExecutor{id: "qoder"}
+	manager.RegisterExecutor(exec)
+
+	auth := &Auth{
+		ID:       "disabled-refresh",
+		Provider: "qoder",
+		Disabled: true,
+		Status:   StatusDisabled,
+		Metadata: map[string]any{
+			"email": "x@example.com",
+			"type":  "qoder",
+		},
+	}
+	if _, errRegister := manager.Register(ctx, auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	if _, errRefresh := manager.refreshAuthForRequest(ctx, auth.ID, ""); errRefresh != nil {
+		t.Fatalf("refreshAuthForRequest: %v", errRefresh)
+	}
+	if got := exec.refreshCalls.Load(); got != 0 {
+		t.Fatalf("Refresh called %d times, want 0 for disabled auth", got)
+	}
+}
+
+func TestShouldRefresh_DisabledAuth(t *testing.T) {
+	manager := NewManager(nil, nil, nil)
+	now := time.Now()
+	auth := &Auth{
+		ID:       "disabled-should-refresh",
+		Provider: "qoder",
+		Disabled: true,
+		Status:   StatusDisabled,
+		Metadata: map[string]any{"expire_time": float64(now.Add(time.Minute).UnixMilli())},
+	}
+	if manager.shouldRefresh(auth, now) {
+		t.Fatal("expected disabled auth not to refresh")
+	}
+}
+
 func TestManager_RefreshSchedulerEntry_RebuildsSupportedModelSetAfterModelRegistration(t *testing.T) {
 	ctx := context.Background()
 
