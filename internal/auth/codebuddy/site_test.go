@@ -39,8 +39,8 @@ func TestIsGlobalDomain(t *testing.T) {
 		{"www.codebuddy.ai", true},
 		{"https://www.codebuddy.ai/login", true},
 		{"codebuddy.ai", true},
-		{"www.workbuddy.ai", true},
-		{"workbuddy.ai", true},
+		{"www.workbuddy.ai", false},
+		{"workbuddy.ai", false},
 	}
 	for _, tc := range cases {
 		if got := IsGlobalDomain(tc.domain); got != tc.want {
@@ -60,7 +60,7 @@ func TestBillingBaseURLForDomain(t *testing.T) {
 		{"www.codebuddy.cn", BillingBaseCN},
 		{"copilot.tencent.com", BillingBaseCN},
 		{"www.codebuddy.ai", BillingBaseGlobal},
-		{"www.workbuddy.ai", BaseURLWorkBuddy},
+		{"www.workbuddy.ai", BillingBaseCN},
 	}
 	for _, tc := range cases {
 		if got := BillingBaseURLForDomain(tc.domain); got != tc.want {
@@ -81,7 +81,7 @@ func TestAPIBaseURLForDomain(t *testing.T) {
 		{"copilot.tencent.com", BaseURLCN},
 		{"www.codebuddy.ai", BaseURLGlobal},
 		{"https://www.codebuddy.ai/", BaseURLGlobal},
-		{"www.workbuddy.ai", BaseURLWorkBuddy},
+		{"www.workbuddy.ai", BaseURLCN},
 	}
 	for _, tc := range cases {
 		if got := APIBaseURLForDomain(tc.domain); got != tc.want {

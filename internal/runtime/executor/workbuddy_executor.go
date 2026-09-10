@@ -1,0 +1,833 @@
+package executor
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/workbuddy"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	cliproxysession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+)
+
+const (
+	workBuddyChatPath                 = "/v2/chat/completions"
+	workBuddyAuthType                 = "workbuddy"
+	workBuddyDefaultSystemPrompt      = "You are a helpful assistant."
+	workBuddyTransientProviderRetries = 1
+)
+
+// Official CLI chat bodies only send these fields. Open WebUI and similar
+// clients attach session/chat metadata that www.workbuddy.ai rejects with
+// 400/11128 ("Illegal API invocation from an unapproved channel").
+var workBuddyChatAllowedFields = []string{
+	"model",
+	"messages",
+	"stream",
+	"stream_options",
+	"temperature",
+	"top_p",
+	"max_tokens",
+	"max_completion_tokens",
+	"stop",
+	"n",
+	"user",
+	"tools",
+	"tool_choice",
+	"parallel_tool_calls",
+	"functions",
+	"function_call",
+	"response_format",
+	"reasoning_effort",
+	"reasoning_summary",
+	"verbosity",
+	"thinking",
+	"presence_penalty",
+	"frequency_penalty",
+}
+
+// WorkBuddyExecutor handles requests to the WorkBuddy API.
+type WorkBuddyExecutor struct {
+	cfg *config.Config
+}
+
+// NewWorkBuddyExecutor creates a new WorkBuddy executor instance.
+func NewWorkBuddyExecutor(cfg *config.Config) *WorkBuddyExecutor {
+	return &WorkBuddyExecutor{cfg: cfg}
+}
+
+// Identifier returns the unique identifier for this executor.
+func (e *WorkBuddyExecutor) Identifier() string { return workBuddyAuthType }
+
+// workBuddyCredentials extracts the access token and domain from auth metadata.
+func workBuddyCredentials(auth *cliproxyauth.Auth) (accessToken, userID, domain string) {
+	if auth == nil {
+		return "", "", ""
+	}
+	accessToken = metaStringValue(auth.Metadata, "access_token")
+	userID = metaStringValue(auth.Metadata, "user_id")
+	domain = metaStringValue(auth.Metadata, "domain")
+	if domain == "" {
+		domain = workbuddy.DefaultDomain
+	}
+	return
+}
+
+// PrepareRequest prepares the HTTP request before execution.
+func (e *WorkBuddyExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth) error {
+	if req == nil {
+		return nil
+	}
+	accessToken, userID, domain := workBuddyCredentials(auth)
+	if accessToken == "" {
+		return fmt.Errorf("workbuddy: missing access token")
+	}
+	e.applyHeaders(req, accessToken, userID, domain)
+	rewriteWorkBuddyRequestURL(req, domain)
+	return nil
+}
+
+// HttpRequest executes a raw HTTP request.
+func (e *WorkBuddyExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth, req *http.Request) (*http.Response, error) {
+	if req == nil {
+		return nil, fmt.Errorf("workbuddy executor: request is nil")
+	}
+	if ctx == nil {
+		ctx = req.Context()
+	}
+	httpReq := req.WithContext(ctx)
+	if err := e.PrepareRequest(httpReq, auth); err != nil {
+		return nil, err
+	}
+	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	return httpClient.Do(httpReq)
+}
+
+// Execute performs a non-streaming request.
+func (e *WorkBuddyExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	baseModel := thinking.ParseSuffix(req.Model).ModelName
+
+	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	defer reporter.trackFailure(ctx, &err)
+
+	accessToken, userID, domain := workBuddyCredentials(auth)
+	if accessToken == "" {
+		return resp, fmt.Errorf("workbuddy: missing access token")
+	}
+
+	from := opts.SourceFormat
+	to := sdktranslator.FromString("openai")
+
+	originalPayloadSource := req.Payload
+	if len(opts.OriginalRequest) > 0 {
+		originalPayloadSource = opts.OriginalRequest
+	}
+	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayloadSource, true)
+	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
+	requestedModel := payloadRequestedModel(opts, req.Model)
+	translated = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel)
+
+	modelInfo := lookupWorkBuddyModelInfo(baseModel)
+	translated, err = thinking.ApplyThinkingWithModelInfo(translated, translated, req.Model, from.String(), to.String(), e.Identifier(), modelInfo)
+	if err != nil {
+		return resp, err
+	}
+	translated = prepareWorkBuddyChatPayload(translated, domain, modelInfo)
+
+	httpResp, err := e.doWorkBuddyChat(ctx, auth, accessToken, userID, domain, translated, resolveWorkBuddyConversationID(opts, req.Payload))
+	if err != nil {
+		return resp, err
+	}
+	defer func() {
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("workbuddy executor: close response body error: %v", errClose)
+		}
+	}()
+
+	body, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		recordAPIResponseError(ctx, e.cfg, err)
+		return resp, err
+	}
+	appendAPIResponseChunk(ctx, e.cfg, body)
+	aggregatedBody, usageDetail, err := aggregateOpenAIChatCompletionStream(body)
+	if err != nil {
+		recordAPIResponseError(ctx, e.cfg, err)
+		return resp, err
+	}
+	reporter.publish(ctx, usageDetail)
+	reporter.ensurePublished(ctx)
+
+	var param any
+	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, aggregatedBody, &param)
+	resp = cliproxyexecutor.Response{Payload: []byte(out), Headers: httpResp.Header.Clone()}
+	return resp, nil
+}
+
+// ExecuteStream performs a streaming request.
+func (e *WorkBuddyExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+	baseModel := thinking.ParseSuffix(req.Model).ModelName
+
+	reporter := newUsageReporter(ctx, e.Identifier(), baseModel, auth)
+	defer reporter.trackFailure(ctx, &err)
+
+	accessToken, userID, domain := workBuddyCredentials(auth)
+	if accessToken == "" {
+		return nil, fmt.Errorf("workbuddy: missing access token")
+	}
+
+	from := opts.SourceFormat
+	to := sdktranslator.FromString("openai")
+
+	originalPayloadSource := req.Payload
+	if len(opts.OriginalRequest) > 0 {
+		originalPayloadSource = opts.OriginalRequest
+	}
+	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayloadSource, true)
+	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, true)
+	requestedModel := payloadRequestedModel(opts, req.Model)
+	translated = applyPayloadConfigWithRoot(e.cfg, baseModel, to.String(), "", translated, originalTranslated, requestedModel)
+
+	modelInfo := lookupWorkBuddyModelInfo(baseModel)
+	translated, err = thinking.ApplyThinkingWithModelInfo(translated, translated, req.Model, from.String(), to.String(), e.Identifier(), modelInfo)
+	if err != nil {
+		return nil, err
+	}
+	translated = prepareWorkBuddyChatPayload(translated, domain, modelInfo)
+
+	httpResp, err := e.doWorkBuddyChat(ctx, auth, accessToken, userID, domain, translated, resolveWorkBuddyConversationID(opts, req.Payload))
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(chan cliproxyexecutor.StreamChunk)
+	go func() {
+		defer close(out)
+		defer func() {
+			if errClose := httpResp.Body.Close(); errClose != nil {
+				log.Errorf("workbuddy executor: close stream body error: %v", errClose)
+			}
+		}()
+
+		scanner := bufio.NewScanner(httpResp.Body)
+		scanner.Buffer(nil, maxScannerBufferSize)
+		var param any
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			appendAPIResponseChunk(ctx, e.cfg, line)
+			if detail, ok := parseOpenAIStreamUsage(line); ok {
+				reporter.publish(ctx, detail)
+			}
+			if len(line) == 0 {
+				continue
+			}
+			if !bytes.HasPrefix(line, []byte("data:")) {
+				continue
+			}
+			normalized := normalizeWorkBuddyChatStreamLine(bytes.Clone(line))
+			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, opts.OriginalRequest, translated, normalized, &param)
+			for i := range chunks {
+				out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}
+			}
+		}
+		if errScan := scanner.Err(); errScan != nil {
+			recordAPIResponseError(ctx, e.cfg, errScan)
+			reporter.publishFailure(ctx)
+			out <- cliproxyexecutor.StreamChunk{Err: errScan}
+		}
+		reporter.ensurePublished(ctx)
+	}()
+
+	return &cliproxyexecutor.StreamResult{
+		Headers: httpResp.Header.Clone(),
+		Chunks:  out,
+	}, nil
+}
+
+// Refresh exchanges the WorkBuddy refresh token for a new access token.
+func (e *WorkBuddyExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error) {
+	if auth == nil {
+		return nil, fmt.Errorf("workbuddy: missing auth")
+	}
+
+	refreshToken := metaStringValue(auth.Metadata, "refresh_token")
+	if refreshToken == "" {
+		log.Debugf("workbuddy executor: no refresh token available, skipping refresh")
+		return auth, nil
+	}
+
+	accessToken, userID, domain := workBuddyCredentials(auth)
+
+	authSvc := workbuddy.NewWorkBuddyAuth(e.cfg)
+	storage, err := authSvc.RefreshToken(ctx, accessToken, refreshToken, userID, domain)
+	if err != nil {
+		return nil, fmt.Errorf("workbuddy: token refresh failed: %w", err)
+	}
+
+	updated := auth.Clone()
+	updated.Metadata["access_token"] = storage.AccessToken
+	if storage.RefreshToken != "" {
+		updated.Metadata["refresh_token"] = storage.RefreshToken
+	}
+	updated.Metadata["expires_in"] = storage.ExpiresIn
+	updated.Metadata["domain"] = storage.Domain
+	if storage.UserID != "" {
+		updated.Metadata["user_id"] = storage.UserID
+	}
+	now := time.Now()
+	updated.UpdatedAt = now
+	updated.LastRefreshedAt = now
+
+	return updated, nil
+}
+
+// CountTokens is not supported for WorkBuddy.
+func (e *WorkBuddyExecutor) CountTokens(_ context.Context, _ *cliproxyauth.Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	return cliproxyexecutor.Response{}, fmt.Errorf("workbuddy: count tokens not supported")
+}
+
+func workBuddyChatURL(domain string) string {
+	return workbuddy.APIBaseURLForDomain(domain) + workBuddyChatPath
+}
+
+func (e *WorkBuddyExecutor) doWorkBuddyChat(ctx context.Context, auth *cliproxyauth.Auth, accessToken, userID, domain string, body []byte, conversationID string) (*http.Response, error) {
+	url := workBuddyChatURL(domain)
+	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+
+	var authID, authLabel, authType, authValue string
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
+
+	var lastErr error
+	for attempt := 0; attempt <= workBuddyTransientProviderRetries; attempt++ {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		e.applyWorkBuddyHeaders(httpReq, accessToken, userID, domain, conversationID)
+		httpReq.Header.Set("Cache-Control", "no-cache")
+		if attempt == 0 {
+			recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
+				URL:       url,
+				Method:    http.MethodPost,
+				Headers:   httpReq.Header.Clone(),
+				Body:      body,
+				Provider:  e.Identifier(),
+				AuthID:    authID,
+				AuthLabel: authLabel,
+				AuthType:  authType,
+				AuthValue: authValue,
+			})
+		}
+
+		httpResp, err := httpClient.Do(httpReq)
+		if err != nil {
+			recordAPIResponseError(ctx, e.cfg, err)
+			lastErr = err
+			if attempt < workBuddyTransientProviderRetries && isWorkBuddyTransientNetworkError(err) {
+				log.Warnf("workbuddy executor: transient network error: %v; retrying", err)
+				continue
+			}
+			return nil, err
+		}
+		recordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+		if isHTTPSuccess(httpResp.StatusCode) {
+			return httpResp, nil
+		}
+
+		errBody, _ := io.ReadAll(httpResp.Body)
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("workbuddy executor: close error response body: %v", errClose)
+		}
+		appendAPIResponseChunk(ctx, e.cfg, errBody)
+		summary := summarizeErrorBody(httpResp.Header.Get("Content-Type"), errBody)
+		lastErr = statusErr{code: httpResp.StatusCode, msg: string(errBody)}
+		if attempt < workBuddyTransientProviderRetries && isWorkBuddyTransientProviderError(httpResp.StatusCode, errBody) {
+			log.Warnf("workbuddy executor: transient upstream error status: %d, body: %s; retrying", httpResp.StatusCode, summary)
+			continue
+		}
+		log.Warnf("workbuddy executor: upstream error status: %d, body: %s", httpResp.StatusCode, summary)
+		return nil, lastErr
+	}
+	return nil, lastErr
+}
+
+func isWorkBuddyTransientProviderError(status int, body []byte) bool {
+	if status != http.StatusInternalServerError && status != http.StatusBadGateway && status != http.StatusServiceUnavailable {
+		return false
+	}
+	code := gjson.GetBytes(body, "code")
+	if code.Int() == 11134 || code.String() == "11134" {
+		return true
+	}
+	msg := strings.ToLower(strings.Join([]string{
+		code.String(),
+		gjson.GetBytes(body, "msg").String(),
+		gjson.GetBytes(body, "message").String(),
+		gjson.GetBytes(body, "extError.code").String(),
+		gjson.GetBytes(body, "extError.message").String(),
+	}, " "))
+	return strings.Contains(msg, "temporarily unavailable") || strings.Contains(msg, "service_unavailable")
+}
+
+func isWorkBuddyTransientNetworkError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "tls handshake timeout") ||
+		strings.Contains(msg, "timeout awaiting response headers") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "unexpected eof")
+}
+
+// normalizeWorkBuddyChatStreamLine rewrites WorkBuddy international SSE chunks.
+// www.workbuddy.ai /v2/chat/completions streams chat-style choices/delta payloads
+// with object="response". The OpenAI Responses translator only accepts
+// object="chat.completion.chunk", so unnormalized streams look empty and /v1/responses
+// fails after the upstream 200.
+func normalizeWorkBuddyChatStreamLine(line []byte) []byte {
+	dataIdx := bytes.Index(line, []byte("data:"))
+	if dataIdx < 0 {
+		return line
+	}
+	jsonStart := dataIdx + len("data:")
+	for jsonStart < len(line) && (line[jsonStart] == ' ' || line[jsonStart] == '\t') {
+		jsonStart++
+	}
+	payload := bytes.TrimSpace(line[jsonStart:])
+	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+		return line
+	}
+
+	updated := payload
+	changed := false
+	if obj := gjson.GetBytes(updated, "object"); obj.Exists() {
+		switch strings.TrimSpace(obj.String()) {
+		case "response", "chat.completion":
+			next, err := sjson.SetBytes(updated, "object", "chat.completion.chunk")
+			if err == nil {
+				updated = next
+				changed = true
+			}
+		}
+	}
+
+	choiceCount := int(gjson.GetBytes(updated, "choices.#").Int())
+	for i := 0; i < choiceCount; i++ {
+		prefix := fmt.Sprintf("choices.%d", i)
+		if tcs := gjson.GetBytes(updated, prefix+".delta.tool_calls"); tcs.Exists() && tcs.IsArray() && len(tcs.Array()) == 0 {
+			if next, err := sjson.DeleteBytes(updated, prefix+".delta.tool_calls"); err == nil {
+				updated = next
+				changed = true
+			}
+		}
+		if extra := gjson.GetBytes(updated, prefix+".delta.extra_fields"); extra.Exists() {
+			if next, err := sjson.DeleteBytes(updated, prefix+".delta.extra_fields"); err == nil {
+				updated = next
+				changed = true
+			}
+		}
+		if fc := gjson.GetBytes(updated, prefix+".delta.function_call"); fc.Exists() && fc.Type == gjson.Null {
+			if next, err := sjson.DeleteBytes(updated, prefix+".delta.function_call"); err == nil {
+				updated = next
+				changed = true
+			}
+		}
+		if fr := gjson.GetBytes(updated, prefix+".finish_reason"); fr.Exists() && fr.Type == gjson.String && strings.TrimSpace(fr.String()) == "" {
+			if next, err := sjson.SetBytes(updated, prefix+".finish_reason", nil); err == nil {
+				updated = next
+				changed = true
+			}
+		}
+	}
+
+	if !changed {
+		return line
+	}
+	out := make([]byte, 0, jsonStart+len(updated))
+	out = append(out, line[:jsonStart]...)
+	out = append(out, updated...)
+	return out
+}
+
+// prepareWorkBuddyChatPayload matches the international CLI chat body:
+// stream + include_usage, optional reasoning_effort, and a leading system turn.
+// Official chat bodies omit reasoning_summary unless the client sends it.
+func prepareWorkBuddyChatPayload(payload []byte, domain string, modelInfo *registry.ModelInfo) []byte {
+	if len(payload) == 0 {
+		return payload
+	}
+	payload, _ = sjson.SetBytes(payload, "stream", true)
+	payload, _ = sjson.SetBytes(payload, "stream_options.include_usage", true)
+	payload = applyWorkBuddyReasoningEffort(payload, modelInfo)
+	payload = rewriteWorkBuddyDeveloperRoles(payload)
+	payload = ensureWorkBuddySystemMessage(payload, domain)
+	return sanitizeWorkBuddyChatPayload(payload)
+}
+
+// rewriteWorkBuddyDeveloperRoles maps OpenAI's developer role to system.
+// GPT-5 / pi / OpenAI JS clients send role=developer. www.workbuddy.ai
+// returns 400/11128 ("Illegal API invocation from an unapproved channel")
+// when any message still has that role, even after a system turn is prepended.
+func rewriteWorkBuddyDeveloperRoles(payload []byte) []byte {
+	messages := gjson.GetBytes(payload, "messages")
+	if !messages.Exists() || !messages.IsArray() {
+		return payload
+	}
+	arr := messages.Array()
+	if len(arr) == 0 {
+		return payload
+	}
+
+	changed := false
+	var b strings.Builder
+	b.Grow(len(messages.Raw))
+	b.WriteByte('[')
+	for i, msg := range arr {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		if strings.EqualFold(strings.TrimSpace(msg.Get("role").String()), "developer") {
+			next, err := sjson.Set(msg.Raw, "role", "system")
+			if err != nil {
+				b.WriteString(msg.Raw)
+				continue
+			}
+			b.WriteString(next)
+			changed = true
+			continue
+		}
+		b.WriteString(msg.Raw)
+	}
+	b.WriteByte(']')
+	if !changed {
+		return payload
+	}
+	out, err := sjson.SetRawBytes(payload, "messages", []byte(b.String()))
+	if err != nil {
+		return payload
+	}
+	return out
+}
+
+func sanitizeWorkBuddyChatPayload(payload []byte) []byte {
+	root := gjson.ParseBytes(payload)
+	if !root.IsObject() {
+		return payload
+	}
+	out := []byte(`{}`)
+	for _, key := range workBuddyChatAllowedFields {
+		value := root.Get(key)
+		if !value.Exists() {
+			continue
+		}
+		next, err := sjson.SetRawBytes(out, key, []byte(value.Raw))
+		if err != nil {
+			return payload
+		}
+		out = next
+	}
+	return out
+}
+
+// ensureWorkBuddySystemMessage prepends a system turn when the international
+// gateway would reject the payload. www.workbuddy.ai returns 400/11128
+// ("first message is not system prompt") when messages[0] is not role=system.
+// /v1/responses often has no instructions field, so the OpenAI translator
+// emits a user turn first. Developer roles are rewritten to system before
+// this runs. CN does not require a leading system turn.
+func ensureWorkBuddySystemMessage(payload []byte, domain string) []byte {
+	if len(payload) == 0 || !workbuddy.IsGlobalDomain(domain) {
+		return payload
+	}
+	messages := gjson.GetBytes(payload, "messages")
+	if !messages.Exists() || !messages.IsArray() {
+		return payload
+	}
+	arr := messages.Array()
+	if len(arr) == 0 {
+		return payload
+	}
+	if strings.EqualFold(arr[0].Get("role").String(), "system") {
+		return payload
+	}
+
+	var b strings.Builder
+	b.Grow(len(messages.Raw) + 64)
+	b.WriteString(`[{"role":"system","content":`)
+	sysContent, _ := json.Marshal(workBuddyDefaultSystemPrompt)
+	b.Write(sysContent)
+	b.WriteByte('}')
+	for _, msg := range arr {
+		b.WriteByte(',')
+		b.WriteString(msg.Raw)
+	}
+	b.WriteByte(']')
+	out, err := sjson.SetRawBytes(payload, "messages", []byte(b.String()))
+	if err != nil {
+		return payload
+	}
+	return out
+}
+
+func rewriteWorkBuddyRequestURL(req *http.Request, domain string) {
+	if req == nil || req.URL == nil {
+		return
+	}
+	base, err := url.Parse(workbuddy.APIBaseURLForDomain(domain))
+	if err != nil || base.Host == "" {
+		return
+	}
+	req.URL.Scheme = base.Scheme
+	req.URL.Host = base.Host
+	req.Host = base.Host
+}
+
+// applyHeaders sets required headers for WorkBuddy API requests.
+func (e *WorkBuddyExecutor) applyHeaders(req *http.Request, accessToken, userID, domain string) {
+	existing := ""
+	if req != nil {
+		existing = req.Header.Get("X-Conversation-ID")
+	}
+	e.applyWorkBuddyHeaders(req, accessToken, userID, domain, existing)
+}
+
+func (e *WorkBuddyExecutor) applyWorkBuddyHeaders(req *http.Request, accessToken, userID, domain, conversationID string) {
+	requestID := strings.ReplaceAll(uuid.NewString(), "-", "")
+	conversationRequestID := strings.ReplaceAll(uuid.NewString(), "-", "")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", workbuddy.UserAgentChat)
+	req.Header.Set("X-User-Id", userID)
+	req.Header.Set("X-Domain", domain)
+	req.Header.Set("X-Product", "SaaS")
+	req.Header.Set("X-IDE-Type", workbuddy.IDEType)
+	req.Header.Set("X-IDE-Name", workbuddy.IDEType)
+	req.Header.Set("X-IDE-Version", workbuddy.AppVersion)
+	req.Header.Set("X-Agent-Intent", "craft")
+	req.Header.Set("X-Agent-Purpose", "conversation")
+	req.Header.Set("X-Agent-Type", "main")
+	req.Header.Set("X-Private-Data", "true")
+	req.Header.Set("x-codebuddy-request", "1")
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	req.Header.Set("X-Request-ID", requestID)
+	req.Header.Set("X-Conversation-ID", workBuddyConversationUUID(conversationID))
+	req.Header.Set("X-Conversation-Request-ID", conversationRequestID)
+	req.Header.Set("X-Conversation-Message-ID", requestID)
+}
+
+func lookupWorkBuddyModelInfo(modelID string) *registry.ModelInfo {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return nil
+	}
+	if info := registry.GetGlobalRegistry().GetModelInfo(modelID, workBuddyAuthType); info != nil && strings.EqualFold(info.Type, workBuddyAuthType) {
+		return info
+	}
+	return registry.NewWorkBuddyModelInfo(modelID, 0)
+}
+
+func applyWorkBuddyReasoningEffort(payload []byte, modelInfo *registry.ModelInfo) []byte {
+	if modelInfo == nil || modelInfo.Thinking == nil || modelInfo.UserDefined {
+		return payload
+	}
+	support := modelInfo.Thinking
+	effort := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "reasoning_effort").String()))
+	if effort == "" {
+		if def := strings.ToLower(strings.TrimSpace(support.DefaultLevel)); def != "" {
+			payload, _ = sjson.SetBytes(payload, "reasoning_effort", def)
+		}
+		return payload
+	}
+	if effort == "none" {
+		if support.ZeroAllowed {
+			return payload
+		}
+		if def := strings.ToLower(strings.TrimSpace(support.DefaultLevel)); def != "" {
+			payload, _ = sjson.SetBytes(payload, "reasoning_effort", def)
+		}
+		return payload
+	}
+	if clamped, ok := clampWorkBuddyEffort(effort, support); ok && clamped != effort {
+		payload, _ = sjson.SetBytes(payload, "reasoning_effort", clamped)
+	}
+	return payload
+}
+
+func clampWorkBuddyEffort(effort string, support *registry.ThinkingSupport) (string, bool) {
+	if support == nil {
+		return effort, false
+	}
+	levels := support.Levels
+	if len(levels) == 0 && strings.TrimSpace(support.DefaultLevel) != "" {
+		levels = []string{strings.ToLower(strings.TrimSpace(support.DefaultLevel))}
+	}
+	if len(levels) == 0 {
+		return effort, false
+	}
+	for _, level := range levels {
+		if strings.EqualFold(strings.TrimSpace(level), effort) {
+			return strings.ToLower(strings.TrimSpace(level)), true
+		}
+	}
+	order := []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+	pos := -1
+	for i, name := range order {
+		if name == effort {
+			pos = i
+			break
+		}
+	}
+	if pos < 0 {
+		if def := strings.ToLower(strings.TrimSpace(support.DefaultLevel)); def != "" {
+			return def, true
+		}
+		return strings.ToLower(strings.TrimSpace(levels[0])), true
+	}
+	bestIdx, bestDist, bestName := -1, len(order)+1, ""
+	preferHigher := pos >= 5 // xhigh/max
+	for _, level := range levels {
+		name := strings.ToLower(strings.TrimSpace(level))
+		idx := -1
+		for i, candidate := range order {
+			if candidate == name {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			continue
+		}
+		dist := idx - pos
+		if dist < 0 {
+			dist = -dist
+		}
+		better := dist < bestDist
+		if dist == bestDist {
+			if preferHigher {
+				better = idx > bestIdx
+			} else {
+				better = idx < bestIdx
+			}
+		}
+		if better {
+			bestIdx, bestDist, bestName = idx, dist, name
+		}
+	}
+	if bestName == "" {
+		if def := strings.ToLower(strings.TrimSpace(support.DefaultLevel)); def != "" {
+			return def, true
+		}
+		return strings.ToLower(strings.TrimSpace(levels[0])), true
+	}
+	return bestName, true
+}
+
+var workBuddyConversationNamespace = uuid.NewSHA1(uuid.NameSpaceURL, []byte("www.workbuddy.ai/conversation"))
+
+func workBuddyConversationUUID(seed string) string {
+	seed = strings.TrimSpace(seed)
+	if seed == "" {
+		return uuid.NewString()
+	}
+	if parsed, err := uuid.Parse(seed); err == nil {
+		return parsed.String()
+	}
+	return uuid.NewSHA1(workBuddyConversationNamespace, []byte(seed)).String()
+}
+
+func resolveWorkBuddyConversationID(opts cliproxyexecutor.Options, payload []byte) string {
+	if id := workBuddyHeaderConversationID(opts.Headers); id != "" {
+		return id
+	}
+	if id := workBuddyPayloadConversationID(opts.OriginalRequest); id != "" {
+		return id
+	}
+	if id := workBuddyPayloadConversationID(payload); id != "" {
+		return id
+	}
+	if id := workBuddyMetadataString(opts.Metadata, cliproxyexecutor.ExecutionSessionMetadataKey); id != "" {
+		return id
+	}
+	if id := workBuddyMetadataString(opts.Metadata, cliproxyexecutor.DerivedSessionIDMetadataKey); id != "" {
+		return id
+	}
+	return ""
+}
+
+func workBuddyHeaderConversationID(headers http.Header) string {
+	if headers == nil {
+		return ""
+	}
+	for _, name := range []string{
+		"X-Conversation-ID",
+		"X-Session-ID",
+		"Session-Id",
+		"X-Claude-Code-Session-Id",
+		"X-Session-Affinity",
+		"X-Client-Request-Id",
+	} {
+		for key, values := range headers {
+			if !strings.EqualFold(key, name) {
+				continue
+			}
+			for _, value := range values {
+				if id := cliproxysession.NormalizeExplicitID(value); id != "" {
+					return id
+				}
+			}
+		}
+		if id := cliproxysession.NormalizeExplicitID(headers.Get(name)); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func workBuddyPayloadConversationID(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	root := gjson.ParseBytes(payload)
+	for _, path := range []string{"conversation_id", "session_id", "sessionId"} {
+		if id := cliproxysession.NormalizeExplicitID(root.Get(path).String()); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func workBuddyMetadataString(metadata map[string]any, key string) string {
+	if metadata == nil {
+		return ""
+	}
+	raw, _ := metadata[key].(string)
+	return cliproxysession.NormalizeExplicitID(raw)
+}

@@ -11,8 +11,6 @@ const (
 	BaseURLCN = "https://copilot.tencent.com"
 	// BaseURLGlobal is the international chat/auth gateway (www.codebuddy.ai).
 	BaseURLGlobal = "https://www.codebuddy.ai"
-	// BaseURLWorkBuddy is the legacy international gateway used by the workbuddy plugin.
-	BaseURLWorkBuddy = "https://www.workbuddy.ai"
 
 	// BaseURL is the historical CN API base. New code should use APIBaseURLForDomain.
 	BaseURL = BaseURLCN
@@ -79,8 +77,7 @@ func IsGlobalDomain(domain string) bool {
 	if d == "" {
 		return false
 	}
-	return d == "codebuddy.ai" || strings.HasSuffix(d, ".codebuddy.ai") ||
-		d == "workbuddy.ai" || strings.HasSuffix(d, ".workbuddy.ai")
+	return d == "codebuddy.ai" || strings.HasSuffix(d, ".codebuddy.ai")
 }
 
 // APIBaseURLForDomain returns the chat/auth API host for a stored token domain.
@@ -88,8 +85,6 @@ func IsGlobalDomain(domain string) bool {
 func APIBaseURLForDomain(domain string) string {
 	d := normalizeHost(domain)
 	switch {
-	case d == "workbuddy.ai" || strings.HasSuffix(d, ".workbuddy.ai"):
-		return BaseURLWorkBuddy
 	case d == "codebuddy.ai" || strings.HasSuffix(d, ".codebuddy.ai"):
 		return BaseURLGlobal
 	default:
@@ -102,8 +97,6 @@ func APIBaseURLForDomain(domain string) string {
 func BillingBaseURLForDomain(domain string) string {
 	d := normalizeHost(domain)
 	switch {
-	case d == "workbuddy.ai" || strings.HasSuffix(d, ".workbuddy.ai"):
-		return BaseURLWorkBuddy
 	case d == "codebuddy.ai" || strings.HasSuffix(d, ".codebuddy.ai"):
 		return BillingBaseGlobal
 	default:
@@ -115,8 +108,6 @@ func BillingBaseURLForDomain(domain string) string {
 func OriginForDomain(domain string) string {
 	d := normalizeHost(domain)
 	switch {
-	case d == "workbuddy.ai" || strings.HasSuffix(d, ".workbuddy.ai"):
-		return BaseURLWorkBuddy
 	case d == "codebuddy.ai" || strings.HasSuffix(d, ".codebuddy.ai"):
 		return BaseURLGlobal
 	default:

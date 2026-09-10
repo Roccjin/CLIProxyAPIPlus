@@ -156,6 +156,8 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		models = applyExcludedModels(executor.GitLabModelsFromAuth(a), excluded)
 	case "codebuddy":
 		models = applyExcludedModels(executor.FetchCodeBuddyModels(ctx, a, s.cfg), excluded)
+	case "workbuddy":
+		models = applyExcludedModels(executor.FetchWorkBuddyModels(ctx, a, s.cfg), excluded)
 	case "qoder":
 		models = applyExcludedModels(executor.FetchQoderModels(ctx, a, s.cfg), excluded)
 	case "xai":
@@ -315,8 +317,10 @@ func (s *Service) refreshAuthFileModels(ctx context.Context, a *coreauth.Auth) (
 		models, err = executor.RefreshQoderModels(ctx, a, s.cfg)
 	case "codebuddy":
 		models, err = executor.RefreshCodeBuddyModels(ctx, a, s.cfg)
+	case "workbuddy":
+		models, err = executor.RefreshWorkBuddyModels(ctx, a, s.cfg)
 	default:
-		return nil, fmt.Errorf("model refresh is only supported for qoder and codebuddy")
+		return nil, fmt.Errorf("model refresh is only supported for qoder, codebuddy, and workbuddy")
 	}
 	if err != nil {
 		return nil, err

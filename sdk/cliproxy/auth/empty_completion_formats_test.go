@@ -32,7 +32,7 @@ func TestSupportedCompletionFormatsRecognized(t *testing.T) {
 			// OpenAI chat-completions wire. Emitted by the OpenAI-compatible
 			// proxy executors (their requestToFormat is FormatOpenAI).
 			name:      "openai-chat",
-			executors: []string{"kimi", "kiro", "kilo", "cursor", "github-copilot", "codebuddy", "gitlab", "qoder", "openai-compatibility"},
+			executors: []string{"kimi", "kiro", "kilo", "cursor", "github-copilot", "codebuddy", "workbuddy", "gitlab", "qoder", "openai-compatibility"},
 			nonEmpty:  []byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n"),
 			empty:     []byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":0}}\n\ndata: [DONE]\n\n"),
 		},

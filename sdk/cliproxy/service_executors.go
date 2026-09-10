@@ -307,6 +307,8 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		s.coreManager.RegisterExecutor(executor.NewGitHubCopilotExecutor(cfg))
 	case "codebuddy":
 		s.coreManager.RegisterExecutor(executor.NewCodeBuddyExecutor(cfg))
+	case "workbuddy":
+		s.coreManager.RegisterExecutor(executor.NewWorkBuddyExecutor(cfg))
 	case "gitlab":
 		s.coreManager.RegisterExecutor(executor.NewGitLabExecutor(cfg))
 	case "qoder":

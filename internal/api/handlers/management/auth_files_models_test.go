@@ -81,7 +81,7 @@ func TestRefreshAuthFileModels_RejectsUnsupportedProvider(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/v0/management/auth-files/models/refresh", body)
 	c.Request.Header.Set("Content-Type", "application/json")
 	h.RefreshAuthFileModels(c)
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "qoder and codebuddy") {
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "qoder, codebuddy, and workbuddy") {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
 }

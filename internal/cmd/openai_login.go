@@ -33,6 +33,9 @@ type LoginOptions struct {
 
 	// CodeBuddyRegion selects the CodeBuddy login site: "global" (www.codebuddy.ai) or "cn".
 	CodeBuddyRegion string
+
+	// WorkBuddyRegion selects the WorkBuddy login site: "global" (www.workbuddy.ai) or "cn".
+	WorkBuddyRegion string
 }
 
 // DoCodexLogin triggers the Codex OAuth flow through the shared authentication manager.

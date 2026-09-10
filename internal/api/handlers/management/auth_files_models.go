@@ -19,6 +19,7 @@ const (
 	authFileModelsRefreshMaxParallel   = 4
 	authFileModelsRefreshProviderQoder = "qoder"
 	authFileModelsRefreshProviderCB    = "codebuddy"
+	authFileModelsRefreshProviderWB    = "workbuddy"
 )
 
 // AuthModelsRefreshFunc live-fetches provider models for one auth and rebinds the registry.
@@ -44,7 +45,7 @@ type authFileModelsRefreshFailure struct {
 
 func isAuthFileModelsRefreshProvider(provider string) bool {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case authFileModelsRefreshProviderQoder, authFileModelsRefreshProviderCB:
+	case authFileModelsRefreshProviderQoder, authFileModelsRefreshProviderCB, authFileModelsRefreshProviderWB:
 		return true
 	default:
 		return false
@@ -129,8 +130,10 @@ func (h *Handler) refreshAuthFileModelsDirect(ctx context.Context, auth *coreaut
 		models, err = executor.RefreshQoderModels(ctx, auth, h.cfg)
 	case authFileModelsRefreshProviderCB:
 		models, err = executor.RefreshCodeBuddyModels(ctx, auth, h.cfg)
+	case authFileModelsRefreshProviderWB:
+		models, err = executor.RefreshWorkBuddyModels(ctx, auth, h.cfg)
 	default:
-		return nil, fmt.Errorf("model refresh is only supported for qoder and codebuddy")
+		return nil, fmt.Errorf("model refresh is only supported for qoder, codebuddy, and workbuddy")
 	}
 	if err != nil {
 		return nil, err
@@ -166,7 +169,7 @@ func (h *Handler) RefreshAuthFileModels(c *gin.Context) {
 		return
 	}
 	if !isAuthFileModelsRefreshProvider(auth.Provider) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "model refresh is only supported for qoder and codebuddy"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "model refresh is only supported for qoder, codebuddy, and workbuddy"})
 		return
 	}
 
@@ -232,7 +235,7 @@ func (h *Handler) RefreshAuthFileModelsBatch(c *gin.Context) {
 				results[idx] = refreshResult{
 					name:      item.Name,
 					authIndex: lockedAuthIndex(auth),
-					err:       fmt.Errorf("model refresh is only supported for qoder and codebuddy"),
+					err:       fmt.Errorf("model refresh is only supported for qoder, codebuddy, and workbuddy"),
 				}
 				return
 			}

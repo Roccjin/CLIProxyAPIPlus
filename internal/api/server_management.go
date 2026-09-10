@@ -209,6 +209,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/kiro-auth-url", s.mgmt.RequestKiroToken)
 		mgmt.GET("/cursor-auth-url", s.mgmt.RequestCursorToken)
 		mgmt.GET("/codebuddy-auth-url", s.mgmt.RequestCodeBuddyToken)
+		mgmt.GET("/workbuddy-auth-url", s.mgmt.RequestWorkBuddyToken)
 		mgmt.GET("/github-auth-url", s.mgmt.RequestGitHubToken)
 		mgmt.GET("/qoder-auth-url", s.mgmt.RequestQoderToken)
 		mgmt.POST("/qoder-auth-url", s.mgmt.RequestQoderPAT)
@@ -218,6 +219,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/qoder-models", s.mgmt.GetQoderModels)
 		mgmt.GET("/qoder-quota", s.mgmt.GetQoderQuota)
 		mgmt.GET("/codebuddy-quota", s.mgmt.GetCodeBuddyQuota)
+		mgmt.GET("/workbuddy-quota", s.mgmt.GetWorkBuddyQuota)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 		mgmt.DELETE("/oauth-session", s.mgmt.CancelAuthSession)
 	}

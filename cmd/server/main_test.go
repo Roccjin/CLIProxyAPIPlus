@@ -101,6 +101,7 @@ func TestIsOneShotCommandMode(t *testing.T) {
 		{name: "antigravity login", opts: commandModeOptions{antigravityLogin: true}, want: true},
 		{name: "github copilot login", opts: commandModeOptions{githubCopilotLogin: true}, want: true},
 		{name: "codebuddy login", opts: commandModeOptions{codeBuddyLogin: true}, want: true},
+		{name: "workbuddy login", opts: commandModeOptions{workBuddyLogin: true}, want: true},
 		{name: "codex oauth login", opts: commandModeOptions{codexLogin: true}, want: true},
 		{name: "codex device login", opts: commandModeOptions{codexDeviceLogin: true}, want: true},
 		{name: "claude login", opts: commandModeOptions{claudeLogin: true}, want: true},

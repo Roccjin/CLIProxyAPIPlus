@@ -401,15 +401,3 @@ func TestNormalizeCodeBuddyChatStreamLine_ResponsesTranslatorAcceptsNormalizedCh
 	}
 }
 
-func TestEnsureCodeBuddySystemMessage_LegacyWorkBuddy(t *testing.T) {
-	t.Parallel()
-
-	in := []byte(`{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
-	out := ensureCodeBuddySystemMessage(in, "www.workbuddy.ai")
-	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "system" {
-		t.Fatalf("messages.0.role = %q, want system; body=%s", got, out)
-	}
-	if got := gjson.GetBytes(out, "messages.1.content.0.text").String(); got != "hi" {
-		t.Fatalf("user text = %q", got)
-	}
-}

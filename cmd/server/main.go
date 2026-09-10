@@ -88,6 +88,7 @@ type commandModeOptions struct {
 	antigravityLogin   bool
 	githubCopilotLogin bool
 	codeBuddyLogin     bool
+	workBuddyLogin     bool
 	codexLogin         bool
 	codexDeviceLogin   bool
 	claudeLogin        bool
@@ -116,6 +117,7 @@ func isOneShotCommandMode(opts commandModeOptions) bool {
 		opts.antigravityLogin ||
 		opts.githubCopilotLogin ||
 		opts.codeBuddyLogin ||
+		opts.workBuddyLogin ||
 		opts.codexLogin ||
 		opts.codexDeviceLogin ||
 		opts.claudeLogin ||
@@ -170,6 +172,8 @@ func main() {
 	var githubCopilotLogin bool
 	var codeBuddyLogin bool
 	var codeBuddyRegion string
+	var workBuddyLogin bool
+	var workBuddyRegion string
 	var xaiLogin bool
 	var qoderLogin bool
 	var qoderOAuth bool
@@ -216,6 +220,8 @@ func main() {
 	flag.BoolVar(&githubCopilotLogin, "github-copilot-login", false, "Login to GitHub Copilot using device flow")
 	flag.BoolVar(&codeBuddyLogin, "codebuddy-login", false, "Login to CodeBuddy using browser OAuth flow")
 	flag.StringVar(&codeBuddyRegion, "codebuddy-region", "global", "CodeBuddy login region: global (www.codebuddy.ai) or cn (www.codebuddy.cn)")
+	flag.BoolVar(&workBuddyLogin, "workbuddy-login", false, "Login to WorkBuddy using browser OAuth flow")
+	flag.StringVar(&workBuddyRegion, "workbuddy-region", "global", "WorkBuddy login region: global (www.workbuddy.ai) or cn (www.workbuddy.cn)")
 	flag.BoolVar(&xaiLogin, "xai-login", false, "Login to xAI using OAuth")
 	flag.BoolVar(&qoderLogin, "qoder-login", false, "Login to Qoder using a personal access token (pt-)")
 	flag.BoolVar(&qoderOAuth, "qoder-oauth", false, "Login to Qoder using the legacy OAuth device flow")
@@ -711,6 +717,7 @@ func main() {
 		QoderOAuth:      qoderOAuth,
 		QoderPAT:        qoderPAT,
 		CodeBuddyRegion: codeBuddyRegion,
+		WorkBuddyRegion: workBuddyRegion,
 	}
 
 	commandMode := isOneShotCommandMode(commandModeOptions{
@@ -720,6 +727,7 @@ func main() {
 		antigravityLogin:   antigravityLogin,
 		githubCopilotLogin: githubCopilotLogin,
 		codeBuddyLogin:     codeBuddyLogin,
+		workBuddyLogin:     workBuddyLogin,
 		codexLogin:         codexLogin,
 		codexDeviceLogin:   codexDeviceLogin,
 		claudeLogin:        claudeLogin,
@@ -809,6 +817,8 @@ func main() {
 	} else if codeBuddyLogin {
 		// Handle CodeBuddy login
 		cmd.DoCodeBuddyLogin(cfg, options)
+	} else if workBuddyLogin {
+		cmd.DoWorkBuddyLogin(cfg, options)
 	} else if codexLogin {
 		// Handle Codex login
 		cmd.DoCodexLogin(cfg, options)

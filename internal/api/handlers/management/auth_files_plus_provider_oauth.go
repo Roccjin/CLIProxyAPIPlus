@@ -27,6 +27,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kilo"
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kiro"
 	qoderauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/qoder"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/workbuddy"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
@@ -202,6 +203,94 @@ func (h *Handler) RequestCodeBuddyToken(c *gin.Context) {
 		log.Infof("CodeBuddy authentication successful! Token saved to %s", savedPath)
 		CompleteOAuthSession(state)
 		CompleteOAuthSessionsByProvider("codebuddy")
+	}()
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "ok",
+		"url":    authState.AuthURL,
+		"state":  state,
+		"region": site.Name,
+	})
+}
+
+func (h *Handler) RequestWorkBuddyToken(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	site, err := workbuddy.ParseSite(c.Query("region"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	log.Infof("Initializing WorkBuddy authentication (region=%s)...", site.Name)
+
+	authSvc := workbuddy.NewWorkBuddyAuthForSite(h.cfg, site)
+	authState, errState := authSvc.FetchAuthState(ctx)
+	if errState != nil {
+		log.Errorf("Failed to start WorkBuddy login: %v", errState)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start WorkBuddy login"})
+		return
+	}
+
+	state := authState.State
+	if strings.TrimSpace(state) == "" {
+		state = fmt.Sprintf("wb-%d", time.Now().UnixNano())
+	}
+	RegisterOAuthSession(state, "workbuddy")
+
+	go func() {
+		pollCtx, cancelPoll := context.WithCancel(ctx)
+		defer cancelPoll()
+		go watchOAuthSessionCancel(pollCtx, cancelPoll, state, "workbuddy")
+
+		log.Infof("Waiting for WorkBuddy authentication: %s", authState.AuthURL)
+		storage, errPoll := authSvc.PollForToken(pollCtx, authState.State)
+		if errPoll != nil {
+			if !IsOAuthSessionPending(state, "workbuddy") {
+				return
+			}
+			SetOAuthSessionError(state, oauthSessionErrorWithCause("Authentication failed", errPoll))
+			log.Errorf("WorkBuddy authentication failed: %v", errPoll)
+			return
+		}
+		if !IsOAuthSessionPending(state, "workbuddy") {
+			return
+		}
+
+		fileName := fmt.Sprintf("workbuddy-%s.json", storage.UserID)
+		label := storage.UserID
+		if label == "" {
+			label = "workbuddy-user"
+		}
+		record := &coreauth.Auth{
+			ID:       fileName,
+			Provider: "workbuddy",
+			FileName: fileName,
+			Label:    label,
+			Storage:  storage,
+			Metadata: map[string]any{
+				"access_token":  storage.AccessToken,
+				"refresh_token": storage.RefreshToken,
+				"user_id":       storage.UserID,
+				"domain":        storage.Domain,
+				"expires_in":    storage.ExpiresIn,
+				"region":        site.Name,
+			},
+		}
+		savedPath, errSave := h.saveOAuthTokenRecord(ctx, state, "workbuddy", record)
+		if errors.Is(errSave, errOAuthSessionNotPending) {
+			return
+		}
+		if errSave != nil {
+			log.Errorf("Failed to save WorkBuddy tokens: %v", errSave)
+			SetOAuthSessionError(state, "Failed to save tokens")
+			return
+		}
+
+		log.Infof("WorkBuddy authentication successful! Token saved to %s", savedPath)
+		CompleteOAuthSession(state)
+		CompleteOAuthSessionsByProvider("workbuddy")
 	}()
 
 	c.JSON(http.StatusOK, gin.H{
