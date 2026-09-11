@@ -368,8 +368,27 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
 			}
 		}
 	}
+	if MigrateLegacyWorkBuddyAuth(auth) {
+		persistAuthMetadataFile(path, auth.Metadata)
+	}
 	cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
 	return []*cliproxyauth.Auth{auth}, nil
+}
+
+func persistAuthMetadataFile(path string, metadata map[string]any) {
+	if strings.TrimSpace(path) == "" || metadata == nil {
+		return
+	}
+	raw, errMarshal := json.Marshal(metadata)
+	if errMarshal != nil {
+		return
+	}
+	file, errOpen := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
+	if errOpen != nil {
+		return
+	}
+	_, _ = file.Write(raw)
+	_ = file.Close()
 }
 
 func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth, error) {

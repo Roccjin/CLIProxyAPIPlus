@@ -61,3 +61,41 @@ func TestAPIBaseURLForDomain(t *testing.T) {
 		t.Errorf("cn = %s", got)
 	}
 }
+
+func TestIsWorkBuddyDomain(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		domain string
+		want   bool
+	}{
+		{"", false},
+		{"www.workbuddy.ai", true},
+		{"workbuddy.ai", true},
+		{"https://www.workbuddy.cn/login", true},
+		{"www.codebuddy.ai", false},
+		{"copilot.tencent.com", false},
+	}
+	for _, tc := range cases {
+		if got := IsWorkBuddyDomain(tc.domain); got != tc.want {
+			t.Errorf("IsWorkBuddyDomain(%q) = %v, want %v", tc.domain, got, tc.want)
+		}
+	}
+}
+
+func TestMigrateLegacyCodeBuddyMetadata(t *testing.T) {
+	t.Parallel()
+
+	legacy := map[string]any{"type": "codebuddy", "domain": "www.workbuddy.ai", "access_token": "tok"}
+	if !MigrateLegacyCodeBuddyMetadata(legacy) {
+		t.Fatal("expected legacy WorkBuddy file to migrate")
+	}
+	if got, _ := legacy["type"].(string); got != "workbuddy" {
+		t.Fatalf("type = %q, want workbuddy", got)
+	}
+
+	codebuddyCN := map[string]any{"type": "codebuddy", "domain": "www.codebuddy.cn"}
+	if MigrateLegacyCodeBuddyMetadata(codebuddyCN) {
+		t.Fatal("codebuddy.cn must not migrate")
+	}
+}

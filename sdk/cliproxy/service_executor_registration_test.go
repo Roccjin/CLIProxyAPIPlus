@@ -130,6 +130,32 @@ func TestSyncPluginModelRuntimePreservesSDKExecutorUnlessForced(t *testing.T) {
 	}
 }
 
+func TestRegisterExecutorForAuthMigratesLegacyWorkBuddy(t *testing.T) {
+	service := &Service{
+		cfg:         &config.Config{},
+		coreManager: coreauth.NewManager(nil, nil, nil),
+	}
+	auth := &coreauth.Auth{
+		ID:       "legacy.json",
+		Provider: "codebuddy",
+		Metadata: map[string]any{
+			"type":   "codebuddy",
+			"domain": "www.workbuddy.ai",
+		},
+	}
+	service.registerExecutorForAuth(auth, false)
+	if auth.Provider != "workbuddy" {
+		t.Fatalf("provider = %q, want workbuddy", auth.Provider)
+	}
+	resolved, ok := service.coreManager.Executor("workbuddy")
+	if !ok || resolved == nil {
+		t.Fatal("workbuddy executor was not registered")
+	}
+	if resolved.Identifier() != "workbuddy" {
+		t.Fatalf("identifier = %q", resolved.Identifier())
+	}
+}
+
 func TestRegisterExecutorForAuth_OpenAICompatUsesNamespacedProviderKey(t *testing.T) {
 	testCases := []struct {
 		name  string

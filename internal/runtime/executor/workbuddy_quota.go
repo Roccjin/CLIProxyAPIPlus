@@ -77,7 +77,7 @@ func FetchWorkBuddyQuota(ctx context.Context, auth *cliproxyauth.Auth, cfg *conf
 	}
 	quota, err := fetchWorkBuddyQuotaAtBase(ctx, auth, cfg, workbuddy.BillingBaseURLForDomain(domain), accessToken, userID, domain)
 	if err != nil && isWorkBuddyQuotaUnauthorized(err) {
-		newToken, newUser, newDomain, refreshErr := refreshWorkBuddyQuotaAuth(ctx, auth, cfg, accessToken, userID, domain)
+		newToken, newUser, newDomain, refreshErr := refreshWorkBuddyQuotaAuth(ctx, auth, cfg, userID, domain)
 		if refreshErr != nil {
 			log.Warnf("workbuddy quota: token refresh after unauthorized failed: %v", refreshErr)
 			return nil, err
@@ -224,47 +224,26 @@ func isWorkBuddyQuotaUnauthorized(err error) bool {
 		strings.Contains(msg, "unauthenticated")
 }
 
-func refreshWorkBuddyQuotaAuth(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config, accessToken, userID, domain string) (string, string, string, error) {
-	refreshToken := ""
-	if auth != nil {
-		refreshToken = metaStringValue(auth.Metadata, "refresh_token")
-	}
-	if refreshToken == "" {
-		return "", "", "", fmt.Errorf("workbuddy: missing refresh token")
-	}
-	authSvc := workbuddy.NewWorkBuddyAuth(cfg)
-	storage, err := authSvc.RefreshToken(ctx, accessToken, refreshToken, userID, domain)
+func refreshWorkBuddyQuotaAuth(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config, userID, domain string) (string, string, string, error) {
+	updated, err := NewWorkBuddyExecutor(cfg).Refresh(ctx, auth)
 	if err != nil {
 		return "", "", "", err
 	}
-	if storage == nil || strings.TrimSpace(storage.AccessToken) == "" {
+	if updated == nil {
 		return "", "", "", fmt.Errorf("workbuddy: empty refresh token response")
 	}
-	if auth != nil {
-		if auth.Metadata == nil {
-			auth.Metadata = map[string]any{}
-		}
-		auth.Metadata["access_token"] = storage.AccessToken
-		if storage.RefreshToken != "" {
-			auth.Metadata["refresh_token"] = storage.RefreshToken
-		}
-		if storage.UserID != "" {
-			auth.Metadata["user_id"] = storage.UserID
-		}
-		if storage.Domain != "" {
-			auth.Metadata["domain"] = storage.Domain
-		}
-		auth.Metadata["expires_in"] = storage.ExpiresIn
+	newAccess, newUser, newDomain := workBuddyCredentials(updated)
+	if strings.TrimSpace(newAccess) == "" {
+		return "", "", "", fmt.Errorf("workbuddy: empty refresh token response")
 	}
-	newUser := storage.UserID
+	adoptWorkBuddyRefreshedAuth(auth, updated)
 	if newUser == "" {
 		newUser = userID
 	}
-	newDomain := storage.Domain
 	if newDomain == "" {
 		newDomain = domain
 	}
-	return storage.AccessToken, newUser, newDomain, nil
+	return newAccess, newUser, newDomain, nil
 }
 
 func applyWorkBuddyBillingHeaders(req *http.Request, accessToken, userID, domain string) {

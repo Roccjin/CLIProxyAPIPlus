@@ -2,10 +2,13 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/workbuddy"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -329,6 +332,90 @@ func TestFileTokenStoreListPluginHandledEmptySuppressesBuiltin(t *testing.T) {
 	}
 	if len(auths) != 0 {
 		t.Fatalf("List() len = %d, want plugin-handled empty result", len(auths))
+	}
+}
+
+func TestFileTokenStoreListMigratesLegacyWorkBuddyCredentials(t *testing.T) {
+	baseDir := t.TempDir()
+	path := filepath.Join(baseDir, "legacy.json")
+	if errWrite := os.WriteFile(path, []byte(`{"type":"codebuddy","domain":"www.workbuddy.ai","access_token":"tok","refresh_token":"rt"}`), 0o600); errWrite != nil {
+		t.Fatalf("write auth file: %v", errWrite)
+	}
+
+	store := NewFileTokenStore()
+	store.SetBaseDir(baseDir)
+	auths, errList := store.List(context.Background())
+	if errList != nil {
+		t.Fatalf("List() error = %v", errList)
+	}
+	if len(auths) != 1 || auths[0].Provider != "workbuddy" {
+		t.Fatalf("auths = %#v", auths)
+	}
+	raw, errRead := os.ReadFile(path)
+	if errRead != nil {
+		t.Fatalf("read migrated file: %v", errRead)
+	}
+	if !strings.Contains(string(raw), `"workbuddy"`) {
+		t.Fatalf("migrated file = %s", raw)
+	}
+}
+
+func TestFileTokenStoreSaveWritesWorkBuddyStorageTokens(t *testing.T) {
+	baseDir := t.TempDir()
+	path := filepath.Join(baseDir, "workbuddy-user.json")
+	store := NewFileTokenStore()
+	store.SetBaseDir(baseDir)
+
+	oldStorage := &workbuddy.WorkBuddyTokenStorage{
+		AccessToken:  "old-access",
+		RefreshToken: "old-refresh",
+		Type:         "workbuddy",
+		Domain:       "www.workbuddy.ai",
+		UserID:       "user-1",
+	}
+	auth := &cliproxyauth.Auth{
+		ID:       "workbuddy-user.json",
+		Provider: "workbuddy",
+		FileName: "workbuddy-user.json",
+		Storage:  oldStorage,
+		Metadata: map[string]any{
+			"access_token":  "old-access",
+			"refresh_token": "old-refresh",
+			"type":          "workbuddy",
+		},
+		Attributes: map[string]string{cliproxyauth.AttributePath: path},
+	}
+	if _, errSave := store.Save(context.Background(), auth); errSave != nil {
+		t.Fatalf("seed Save: %v", errSave)
+	}
+
+	updated := auth.Clone()
+	updated.Metadata["access_token"] = "new-access"
+	updated.Metadata["refresh_token"] = "new-refresh"
+	updated.Storage = &workbuddy.WorkBuddyTokenStorage{
+		AccessToken:  "new-access",
+		RefreshToken: "new-refresh",
+		Type:         "workbuddy",
+		Domain:       "www.workbuddy.ai",
+		UserID:       "user-1",
+	}
+	if _, errSave := store.Save(context.Background(), updated); errSave != nil {
+		t.Fatalf("updated Save: %v", errSave)
+	}
+
+	raw, errRead := os.ReadFile(path)
+	if errRead != nil {
+		t.Fatalf("read saved file: %v", errRead)
+	}
+	var saved map[string]any
+	if errUnmarshal := json.Unmarshal(raw, &saved); errUnmarshal != nil {
+		t.Fatalf("unmarshal saved file: %v", errUnmarshal)
+	}
+	if got, _ := saved["access_token"].(string); got != "new-access" {
+		t.Fatalf("access_token = %q, file=%s", got, raw)
+	}
+	if got, _ := saved["refresh_token"].(string); got != "new-refresh" {
+		t.Fatalf("refresh_token = %q, file=%s", got, raw)
 	}
 }
 

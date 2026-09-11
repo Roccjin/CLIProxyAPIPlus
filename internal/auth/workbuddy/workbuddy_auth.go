@@ -37,17 +37,33 @@ type WorkBuddyAuth struct {
 }
 
 func NewWorkBuddyAuth(cfg *config.Config) *WorkBuddyAuth {
-	return NewWorkBuddyAuthForSite(cfg, SiteCN())
+	return NewWorkBuddyAuthWithProxyURL(cfg, "")
 }
 
 func NewWorkBuddyAuthForSite(cfg *config.Config, site Site) *WorkBuddyAuth {
+	return newWorkBuddyAuth(cfg, "", site)
+}
+
+// NewWorkBuddyAuthWithProxyURL creates a WorkBuddy auth helper with an explicit proxy URL.
+// proxyURL takes precedence over cfg.ProxyURL when non-empty.
+func NewWorkBuddyAuthWithProxyURL(cfg *config.Config, proxyURL string) *WorkBuddyAuth {
+	return newWorkBuddyAuth(cfg, proxyURL, SiteCN())
+}
+
+func newWorkBuddyAuth(cfg *config.Config, proxyURL string, site Site) *WorkBuddyAuth {
 	if site.APIBaseURL == "" {
 		site = SiteCN()
 	}
-	httpClient := &http.Client{Timeout: 30 * time.Second}
+	effectiveProxyURL := strings.TrimSpace(proxyURL)
+	var sdkCfg config.SDKConfig
 	if cfg != nil {
-		httpClient = util.SetProxy(&cfg.SDKConfig, httpClient)
+		sdkCfg = cfg.SDKConfig
+		if effectiveProxyURL == "" {
+			effectiveProxyURL = strings.TrimSpace(cfg.ProxyURL)
+		}
 	}
+	sdkCfg.ProxyURL = effectiveProxyURL
+	httpClient := util.SetProxy(&sdkCfg, &http.Client{Timeout: 30 * time.Second})
 	return &WorkBuddyAuth{httpClient: httpClient, cfg: cfg, baseURL: site.APIBaseURL, site: site}
 }
 

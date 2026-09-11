@@ -150,7 +150,7 @@ func (e *WorkBuddyExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 	if err != nil {
 		return resp, err
 	}
-	translated = prepareWorkBuddyChatPayload(translated, domain, modelInfo)
+	translated = prepareWorkBuddyChatPayloadFrom(translated, originalPayloadSource, domain, modelInfo)
 
 	httpResp, err := e.doWorkBuddyChat(ctx, auth, accessToken, userID, domain, translated, resolveWorkBuddyConversationID(opts, req.Payload))
 	if err != nil {
@@ -211,7 +211,7 @@ func (e *WorkBuddyExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 	if err != nil {
 		return nil, err
 	}
-	translated = prepareWorkBuddyChatPayload(translated, domain, modelInfo)
+	translated = prepareWorkBuddyChatPayloadFrom(translated, originalPayloadSource, domain, modelInfo)
 
 	httpResp, err := e.doWorkBuddyChat(ctx, auth, accessToken, userID, domain, translated, resolveWorkBuddyConversationID(opts, req.Payload))
 	if err != nil {
@@ -276,27 +276,63 @@ func (e *WorkBuddyExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth
 
 	accessToken, userID, domain := workBuddyCredentials(auth)
 
-	authSvc := workbuddy.NewWorkBuddyAuth(e.cfg)
+	authSvc := workbuddy.NewWorkBuddyAuthWithProxyURL(e.cfg, auth.ProxyURL)
 	storage, err := authSvc.RefreshToken(ctx, accessToken, refreshToken, userID, domain)
 	if err != nil {
 		return nil, fmt.Errorf("workbuddy: token refresh failed: %w", err)
 	}
 
 	updated := auth.Clone()
-	updated.Metadata["access_token"] = storage.AccessToken
-	if storage.RefreshToken != "" {
-		updated.Metadata["refresh_token"] = storage.RefreshToken
-	}
-	updated.Metadata["expires_in"] = storage.ExpiresIn
-	updated.Metadata["domain"] = storage.Domain
-	if storage.UserID != "" {
-		updated.Metadata["user_id"] = storage.UserID
-	}
+	applyWorkBuddyRefreshedTokens(updated, storage)
 	now := time.Now()
 	updated.UpdatedAt = now
 	updated.LastRefreshedAt = now
 
 	return updated, nil
+}
+
+func applyWorkBuddyRefreshedTokens(auth *cliproxyauth.Auth, storage *workbuddy.WorkBuddyTokenStorage) {
+	if auth == nil || storage == nil {
+		return
+	}
+	if auth.Metadata == nil {
+		auth.Metadata = map[string]any{}
+	}
+	auth.Provider = workBuddyAuthType
+	auth.Metadata["type"] = workBuddyAuthType
+	auth.Metadata["access_token"] = storage.AccessToken
+	if storage.RefreshToken != "" {
+		auth.Metadata["refresh_token"] = storage.RefreshToken
+	}
+	auth.Metadata["expires_in"] = storage.ExpiresIn
+	if storage.RefreshExpiresIn != 0 {
+		auth.Metadata["refresh_expires_in"] = storage.RefreshExpiresIn
+	}
+	if storage.Domain != "" {
+		auth.Metadata["domain"] = storage.Domain
+	}
+	if storage.UserID != "" {
+		auth.Metadata["user_id"] = storage.UserID
+	}
+	if storage.TokenType != "" {
+		auth.Metadata["token_type"] = storage.TokenType
+	}
+	next := *storage
+	if strings.TrimSpace(next.Type) == "" {
+		next.Type = workBuddyAuthType
+	}
+	auth.Storage = &next
+}
+
+func adoptWorkBuddyRefreshedAuth(dst, src *cliproxyauth.Auth) {
+	if dst == nil || src == nil || dst == src {
+		return
+	}
+	dst.Metadata = src.Metadata
+	dst.Storage = src.Storage
+	dst.Provider = src.Provider
+	dst.UpdatedAt = src.UpdatedAt
+	dst.LastRefreshedAt = src.LastRefreshedAt
 }
 
 // CountTokens is not supported for WorkBuddy.
@@ -480,15 +516,84 @@ func normalizeWorkBuddyChatStreamLine(line []byte) []byte {
 // stream + include_usage, optional reasoning_effort, and a leading system turn.
 // Official chat bodies omit reasoning_summary unless the client sends it.
 func prepareWorkBuddyChatPayload(payload []byte, domain string, modelInfo *registry.ModelInfo) []byte {
+	return prepareWorkBuddyChatPayloadFrom(payload, nil, domain, modelInfo)
+}
+
+func prepareWorkBuddyChatPayloadFrom(payload, original []byte, domain string, modelInfo *registry.ModelInfo) []byte {
 	if len(payload) == 0 {
 		return payload
 	}
 	payload, _ = sjson.SetBytes(payload, "stream", true)
 	payload, _ = sjson.SetBytes(payload, "stream_options.include_usage", true)
 	payload = applyWorkBuddyReasoningEffort(payload, modelInfo)
+	payload = restoreWorkBuddyDeveloperAsSystem(payload, original)
 	payload = rewriteWorkBuddyDeveloperRoles(payload)
 	payload = ensureWorkBuddySystemMessage(payload, domain)
+	payload = remapWorkBuddyMaxTokens(payload)
 	return sanitizeWorkBuddyChatPayload(payload)
+}
+
+// remapWorkBuddyMaxTokens prefers max_completion_tokens. OpenAI Responses
+// translation copies max_output_tokens onto max_tokens; WorkBuddy forwards
+// that field to the model provider, which rejects it as model_param_invalid
+// (400/11133). Chat Completions clients already send max_completion_tokens
+// and succeed with the same value.
+func remapWorkBuddyMaxTokens(payload []byte) []byte {
+	maxTokens := gjson.GetBytes(payload, "max_tokens")
+	if !maxTokens.Exists() {
+		return payload
+	}
+	if !gjson.GetBytes(payload, "max_completion_tokens").Exists() {
+		payload, _ = sjson.SetRawBytes(payload, "max_completion_tokens", []byte(maxTokens.Raw))
+	}
+	payload, _ = sjson.DeleteBytes(payload, "max_tokens")
+	return payload
+}
+
+// restoreWorkBuddyDeveloperAsSystem undoes openai-response → chat translation
+// of role=developer to role=user. Chat Completions keeps developer until
+// rewriteWorkBuddyDeveloperRoles maps it to system; Responses would otherwise
+// prepend a dummy system turn and send the real instructions as a user message.
+func restoreWorkBuddyDeveloperAsSystem(payload, original []byte) []byte {
+	if !originalStartsWithDeveloper(original) {
+		return payload
+	}
+	messages := gjson.GetBytes(payload, "messages")
+	if !messages.Exists() || !messages.IsArray() {
+		return payload
+	}
+	arr := messages.Array()
+	if len(arr) == 0 {
+		return payload
+	}
+	role := strings.ToLower(strings.TrimSpace(arr[0].Get("role").String()))
+	if role != "user" && role != "developer" {
+		return payload
+	}
+	out, err := sjson.SetBytes(payload, "messages.0.role", "system")
+	if err != nil {
+		return payload
+	}
+	return out
+}
+
+func originalStartsWithDeveloper(original []byte) bool {
+	if len(original) == 0 {
+		return false
+	}
+	root := gjson.ParseBytes(original)
+	if strings.EqualFold(strings.TrimSpace(root.Get("messages.0.role").String()), "developer") {
+		return true
+	}
+	input := root.Get("input")
+	if !input.Exists() || !input.IsArray() {
+		return false
+	}
+	arr := input.Array()
+	if len(arr) == 0 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(arr[0].Get("role").String()), "developer")
 }
 
 // rewriteWorkBuddyDeveloperRoles maps OpenAI's developer role to system.
@@ -767,10 +872,10 @@ func resolveWorkBuddyConversationID(opts cliproxyexecutor.Options, payload []byt
 	if id := workBuddyHeaderConversationID(opts.Headers); id != "" {
 		return id
 	}
-	if id := workBuddyPayloadConversationID(opts.OriginalRequest); id != "" {
+	if id := cliproxysession.ExplicitID(opts.Headers, opts.OriginalRequest); id != "" {
 		return id
 	}
-	if id := workBuddyPayloadConversationID(payload); id != "" {
+	if id := cliproxysession.ExplicitID(nil, payload); id != "" {
 		return id
 	}
 	if id := workBuddyMetadataString(opts.Metadata, cliproxyexecutor.ExecutionSessionMetadataKey); id != "" {
@@ -790,6 +895,7 @@ func workBuddyHeaderConversationID(headers http.Header) string {
 		"X-Conversation-ID",
 		"X-Session-ID",
 		"Session-Id",
+		"Session_id",
 		"X-Claude-Code-Session-Id",
 		"X-Session-Affinity",
 		"X-Client-Request-Id",
@@ -805,19 +911,6 @@ func workBuddyHeaderConversationID(headers http.Header) string {
 			}
 		}
 		if id := cliproxysession.NormalizeExplicitID(headers.Get(name)); id != "" {
-			return id
-		}
-	}
-	return ""
-}
-
-func workBuddyPayloadConversationID(payload []byte) string {
-	if len(payload) == 0 {
-		return ""
-	}
-	root := gjson.ParseBytes(payload)
-	for _, path := range []string{"conversation_id", "session_id", "sessionId"} {
-		if id := cliproxysession.NormalizeExplicitID(root.Get(path).String()); id != "" {
 			return id
 		}
 	}

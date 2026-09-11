@@ -3,6 +3,8 @@ package codebuddy
 import (
 	"fmt"
 	"strings"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/workbuddy"
 )
 
 const (
@@ -82,7 +84,12 @@ func IsGlobalDomain(domain string) bool {
 
 // APIBaseURLForDomain returns the chat/auth API host for a stored token domain.
 // CN tokens use copilot.tencent.com; international tokens must stay on their own host.
+// Legacy WorkBuddy files stored as type "codebuddy" keep their original hosts
+// until they are migrated to the WorkBuddy provider.
 func APIBaseURLForDomain(domain string) string {
+	if workbuddy.IsWorkBuddyDomain(domain) {
+		return workbuddy.APIBaseURLForDomain(domain)
+	}
 	d := normalizeHost(domain)
 	switch {
 	case d == "codebuddy.ai" || strings.HasSuffix(d, ".codebuddy.ai"):
@@ -95,6 +102,9 @@ func APIBaseURLForDomain(domain string) string {
 // BillingBaseURLForDomain returns the credits/resource-package host.
 // CN billing lives on www.codebuddy.cn, not the copilot.tencent.com chat gateway.
 func BillingBaseURLForDomain(domain string) string {
+	if workbuddy.IsWorkBuddyDomain(domain) {
+		return workbuddy.BillingBaseURLForDomain(domain)
+	}
 	d := normalizeHost(domain)
 	switch {
 	case d == "codebuddy.ai" || strings.HasSuffix(d, ".codebuddy.ai"):
@@ -106,6 +116,9 @@ func BillingBaseURLForDomain(domain string) string {
 
 // OriginForDomain returns the Origin/Referer base for billing and login-adjacent calls.
 func OriginForDomain(domain string) string {
+	if workbuddy.IsWorkBuddyDomain(domain) {
+		return workbuddy.OriginForDomain(domain)
+	}
 	d := normalizeHost(domain)
 	switch {
 	case d == "codebuddy.ai" || strings.HasSuffix(d, ".codebuddy.ai"):

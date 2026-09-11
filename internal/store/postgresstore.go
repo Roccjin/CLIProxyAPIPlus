@@ -326,10 +326,7 @@ func (s *PostgresStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error) 
 			log.WithError(errWeight).Warnf("postgres store: skipping auth %s with invalid weight", id)
 			continue
 		}
-		provider := strings.TrimSpace(valueAsString(metadata["type"]))
-		if provider == "" {
-			provider = "unknown"
-		}
+		provider := providerFromAuthMetadata(metadata)
 		attr := map[string]string{
 			cliproxyauth.AttributePath:          path,
 			cliproxyauth.AttributeSourceBackend: cliproxyauth.AuthSourcePostgres,

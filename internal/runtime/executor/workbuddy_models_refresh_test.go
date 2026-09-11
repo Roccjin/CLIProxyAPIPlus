@@ -67,3 +67,18 @@ func TestFetchWorkBuddyModelsFromURL_StatusError(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestFetchWorkBuddyModelsFromURL_HonorsCallerCancellation(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("cancelled catalog request should not reach upstream")
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := fetchWorkBuddyModelsFromURL(ctx, &cliproxyauth.Auth{}, nil, srv.URL+workBuddyConfigPath, "token", "user-1", workbuddy.DefaultDomainGlobal)
+	if err == nil {
+		t.Fatal("expected cancellation error")
+	}
+}

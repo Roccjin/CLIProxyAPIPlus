@@ -655,10 +655,7 @@ func (s *GitTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth, 
 	if errWeight := cliproxyauth.ValidateAuthWeight(&cliproxyauth.Auth{Metadata: metadata}); errWeight != nil {
 		return nil, errWeight
 	}
-	provider, _ := metadata["type"].(string)
-	if provider == "" {
-		provider = "unknown"
-	}
+	provider := providerFromAuthMetadata(metadata)
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("stat file: %w", err)

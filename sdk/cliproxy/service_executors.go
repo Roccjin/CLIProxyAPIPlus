@@ -9,6 +9,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
@@ -262,6 +263,7 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 	// Skip disabled auth entries when (re)binding executors.
 	// Disabled auths can linger during config reloads (e.g., removed OpenAI-compat entries)
 	// and must not override active provider executors.
+	sdkAuth.MigrateLegacyWorkBuddyAuth(a)
 	if a.Disabled {
 		return
 	}

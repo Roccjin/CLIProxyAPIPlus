@@ -10,6 +10,20 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
+func TestExplicitIDRecognizesSharedSessionForms(t *testing.T) {
+	t.Parallel()
+
+	if got := ExplicitID(http.Header{"Session_id": []string{"header-session"}}, nil); got != "header-session" {
+		t.Fatalf("Session_id = %q", got)
+	}
+	if got := ExplicitID(nil, []byte(`{"prompt_cache_key":"cache-session"}`)); got != "cache-session" {
+		t.Fatalf("prompt_cache_key = %q", got)
+	}
+	if got := ExplicitID(nil, []byte(`{"metadata":{"user_id":"account_session_70eba61f-67d5-41a1-aa6a-71f416175d73"}}`)); got != "70eba61f-67d5-41a1-aa6a-71f416175d73" {
+		t.Fatalf("metadata.user_id session = %q", got)
+	}
+}
+
 func TestDeriveIDStableAcrossConversationGrowth(t *testing.T) {
 	t.Parallel()
 

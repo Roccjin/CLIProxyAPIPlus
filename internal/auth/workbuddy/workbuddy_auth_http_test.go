@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
 // newTestAuth creates a WorkBuddyAuth pointing at the given test server.
@@ -15,6 +17,18 @@ func newTestAuth(serverURL string) *WorkBuddyAuth {
 		httpClient: http.DefaultClient,
 		baseURL:    serverURL,
 		site:       SiteCN(),
+	}
+}
+
+func TestNewWorkBuddyAuthWithProxyURL_OverrideTakesPrecedence(t *testing.T) {
+	cfg := &config.Config{SDKConfig: config.SDKConfig{ProxyURL: "http://global-proxy.example:8080"}}
+	auth := NewWorkBuddyAuthWithProxyURL(cfg, "http://account-proxy.example:8080")
+	if auth.httpClient == nil || auth.httpClient.Transport == nil {
+		t.Fatal("expected account proxy transport")
+	}
+	global := NewWorkBuddyAuth(cfg)
+	if global.httpClient == nil || global.httpClient.Transport == nil {
+		t.Fatal("expected global proxy transport")
 	}
 }
 

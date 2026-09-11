@@ -83,6 +83,16 @@ func ParseSite(value string) (Site, error) {
 	}
 }
 
+// IsWorkBuddyDomain reports whether domain belongs to WorkBuddy (CN or international).
+func IsWorkBuddyDomain(domain string) bool {
+	d := normalizeHost(domain)
+	if d == "" {
+		return false
+	}
+	return d == "workbuddy.ai" || strings.HasSuffix(d, ".workbuddy.ai") ||
+		d == "workbuddy.cn" || strings.HasSuffix(d, ".workbuddy.cn")
+}
+
 // IsGlobalDomain reports whether domain belongs to the international WorkBuddy service.
 func IsGlobalDomain(domain string) bool {
 	d := normalizeHost(domain)
@@ -90,6 +100,24 @@ func IsGlobalDomain(domain string) bool {
 		return false
 	}
 	return d == "workbuddy.ai" || strings.HasSuffix(d, ".workbuddy.ai")
+}
+
+// MigrateLegacyCodeBuddyMetadata rewrites type:"codebuddy" records whose domain
+// belongs to WorkBuddy so they bind to the WorkBuddy executor on the next load.
+func MigrateLegacyCodeBuddyMetadata(metadata map[string]any) bool {
+	if metadata == nil {
+		return false
+	}
+	rawType, _ := metadata["type"].(string)
+	if !strings.EqualFold(strings.TrimSpace(rawType), "codebuddy") {
+		return false
+	}
+	domain, _ := metadata["domain"].(string)
+	if !IsWorkBuddyDomain(domain) {
+		return false
+	}
+	metadata["type"] = "workbuddy"
+	return true
 }
 
 // APIBaseURLForDomain returns the chat/auth API host for a stored token domain.

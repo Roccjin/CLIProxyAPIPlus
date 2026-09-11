@@ -580,10 +580,7 @@ func (s *ObjectTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Aut
 	if errWeight := cliproxyauth.ValidateAuthWeight(&cliproxyauth.Auth{Metadata: metadata}); errWeight != nil {
 		return nil, errWeight
 	}
-	provider := strings.TrimSpace(valueAsString(metadata["type"]))
-	if provider == "" {
-		provider = "unknown"
-	}
+	provider := providerFromAuthMetadata(metadata)
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("stat auth file: %w", err)

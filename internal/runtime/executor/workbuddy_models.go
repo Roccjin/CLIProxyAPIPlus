@@ -67,10 +67,7 @@ func fetchWorkBuddyModelsFromURL(ctx context.Context, auth *cliproxyauth.Auth, c
 		ctx = context.Background()
 	}
 
-	fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, modelsURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build v3 config request: %w", err)
 	}
@@ -78,7 +75,7 @@ func fetchWorkBuddyModelsFromURL(ctx context.Context, auth *cliproxyauth.Auth, c
 	e.applyHeaders(req, accessToken, userID, domain)
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 
-	httpClient := newProxyAwareHTTPClient(fetchCtx, cfg, auth, 0)
+	httpClient := newProxyAwareHTTPClient(ctx, cfg, auth, 0)
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch v3 config failed: %w", err)

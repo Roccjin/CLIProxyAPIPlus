@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/workbuddy"
 	responsesconverter "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/openai/openai/responses"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/tidwall/gjson"
 )
@@ -352,6 +353,54 @@ func TestPrepareWorkBuddyChatPayload_ConvertsDeveloperOnCN(t *testing.T) {
 	}
 }
 
+func TestPrepareWorkBuddyChatPayload_RemapsMaxTokens(t *testing.T) {
+	t.Parallel()
+
+	in := []byte(`{"model":"deepseek-v4.1-flash","max_tokens":384000,"messages":[{"role":"system","content":"sys"},{"role":"user","content":"hi"}]}`)
+	out := prepareWorkBuddyChatPayload(in, "www.workbuddy.ai", lookupWorkBuddyModelInfo("deepseek-v4.1-flash"))
+	if gjson.GetBytes(out, "max_tokens").Exists() {
+		t.Fatalf("max_tokens leaked: %s", out)
+	}
+	if got := gjson.GetBytes(out, "max_completion_tokens").Int(); got != 384000 {
+		t.Fatalf("max_completion_tokens = %d, want 384000; body=%s", got, out)
+	}
+
+	both := []byte(`{"max_tokens":384000,"max_completion_tokens":8192,"messages":[{"role":"system","content":"sys"}]}`)
+	kept := prepareWorkBuddyChatPayload(both, "www.workbuddy.ai", nil)
+	if gjson.GetBytes(kept, "max_tokens").Exists() {
+		t.Fatalf("max_tokens leaked when both present: %s", kept)
+	}
+	if got := gjson.GetBytes(kept, "max_completion_tokens").Int(); got != 8192 {
+		t.Fatalf("max_completion_tokens = %d, want original 8192; body=%s", got, kept)
+	}
+}
+
+func TestPrepareWorkBuddyChatPayload_RestoresResponsesDeveloperAsSystem(t *testing.T) {
+	t.Parallel()
+
+	original := []byte(`{"model":"deepseek-v4.1-flash","input":[{"role":"developer","content":"You are pi."},{"role":"user","content":[{"type":"input_text","text":"hi"}]}],"max_output_tokens":384000}`)
+	translated := []byte(`{"model":"deepseek-v4.1-flash","max_tokens":384000,"messages":[{"role":"user","content":"You are pi."},{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+	out := prepareWorkBuddyChatPayloadFrom(translated, original, "www.workbuddy.ai", lookupWorkBuddyModelInfo("deepseek-v4.1-flash"))
+	if got := gjson.GetBytes(out, "messages.#").Int(); got != 2 {
+		t.Fatalf("messages len = %d, want 2 without dummy system; body=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "system" {
+		t.Fatalf("messages.0.role = %q, want system; body=%s", got, out)
+	}
+	if got := gjson.GetBytes(out, "messages.0.content").String(); got != "You are pi." {
+		t.Fatalf("messages.0.content = %q, want original developer prompt", got)
+	}
+	if got := gjson.GetBytes(out, "messages.1.role").String(); got != "user" {
+		t.Fatalf("messages.1.role = %q", got)
+	}
+	if gjson.GetBytes(out, "max_tokens").Exists() {
+		t.Fatalf("max_tokens leaked: %s", out)
+	}
+	if got := gjson.GetBytes(out, "max_completion_tokens").Int(); got != 384000 {
+		t.Fatalf("max_completion_tokens = %d, want 384000; body=%s", got, out)
+	}
+}
+
 func TestIsWorkBuddyTransientNetworkError(t *testing.T) {
 	t.Parallel()
 
@@ -500,6 +549,71 @@ func TestResolveWorkBuddyConversationID_PrefersExplicitThenDerived(t *testing.T)
 	opts.OriginalRequest = nil
 	if got := resolveWorkBuddyConversationID(opts, nil); got != "ctx:v1:derived" {
 		t.Fatalf("derived session id = %q", got)
+	}
+}
+
+func TestResolveWorkBuddyConversationID_SharedExplicitForms(t *testing.T) {
+	t.Parallel()
+
+	if got := resolveWorkBuddyConversationID(cliproxyexecutor.Options{
+		OriginalRequest: []byte(`{"prompt_cache_key":"cache-session"}`),
+	}, nil); got != "cache-session" {
+		t.Fatalf("prompt_cache_key = %q", got)
+	}
+	if got := resolveWorkBuddyConversationID(cliproxyexecutor.Options{
+		Headers: http.Header{"Session_id": []string{"header-session"}},
+	}, nil); got != "header-session" {
+		t.Fatalf("Session_id = %q", got)
+	}
+	if got := resolveWorkBuddyConversationID(cliproxyexecutor.Options{
+		OriginalRequest: []byte(`{"metadata":{"user_id":"user_session_70eba61f-67d5-41a1-aa6a-71f416175d73"}}`),
+	}, nil); got != "70eba61f-67d5-41a1-aa6a-71f416175d73" {
+		t.Fatalf("claude metadata session = %q", got)
+	}
+}
+
+func TestApplyWorkBuddyRefreshedTokens_ReplacesStorage(t *testing.T) {
+	t.Parallel()
+
+	oldStorage := &workbuddy.WorkBuddyTokenStorage{
+		AccessToken:  "old-access",
+		RefreshToken: "old-refresh",
+		Type:         "workbuddy",
+	}
+	auth := &cliproxyauth.Auth{
+		Provider: "workbuddy",
+		Metadata: map[string]any{
+			"access_token":  "old-access",
+			"refresh_token": "old-refresh",
+		},
+		Storage: oldStorage,
+	}
+	cloned := auth.Clone()
+	applyWorkBuddyRefreshedTokens(cloned, &workbuddy.WorkBuddyTokenStorage{
+		AccessToken:      "new-access",
+		RefreshToken:     "new-refresh",
+		ExpiresIn:        3600,
+		RefreshExpiresIn: 86400,
+		TokenType:        "bearer",
+		Domain:           "www.workbuddy.ai",
+		UserID:           "user-1",
+		Type:             "workbuddy",
+	})
+	storage, ok := cloned.Storage.(*workbuddy.WorkBuddyTokenStorage)
+	if !ok || storage == nil {
+		t.Fatalf("storage type = %T", cloned.Storage)
+	}
+	if storage == oldStorage {
+		t.Fatal("refresh reused the original storage pointer")
+	}
+	if storage.AccessToken != "new-access" || storage.RefreshToken != "new-refresh" {
+		t.Fatalf("storage tokens = %+v", storage)
+	}
+	if oldStorage.AccessToken != "old-access" {
+		t.Fatal("original storage was mutated")
+	}
+	if cloned.Metadata["access_token"] != "new-access" || cloned.Metadata["refresh_token"] != "new-refresh" {
+		t.Fatalf("metadata = %#v", cloned.Metadata)
 	}
 }
 
