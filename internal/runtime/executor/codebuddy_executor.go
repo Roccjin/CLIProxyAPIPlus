@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codebuddy"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -34,6 +35,8 @@ const (
 	codeBuddyDefaultReasoningSummary  = "auto"
 	codeBuddyTransientProviderRetries = 1
 )
+
+var codeBuddyConversationNamespace = uuid.NewSHA1(uuid.NameSpaceURL, []byte("www.codebuddy.ai/conversation"))
 
 // Official CLI chat bodies only send these fields. Open WebUI and similar
 // clients attach session/chat metadata that www.codebuddy.ai rejects with
@@ -133,6 +136,7 @@ func (e *CodeBuddyExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 		return resp, fmt.Errorf("codebuddy: missing access token")
 	}
 
+	conversationID := helps.ResolveBuddyConversationID(opts, req.Payload)
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
 
@@ -151,7 +155,7 @@ func (e *CodeBuddyExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 	}
 	translated = prepareCodeBuddyChatPayload(translated, domain)
 
-	httpResp, err := e.doCodeBuddyChat(ctx, auth, accessToken, userID, domain, translated)
+	httpResp, err := e.doCodeBuddyChat(ctx, auth, accessToken, userID, domain, translated, conversationID)
 	if err != nil {
 		return resp, err
 	}
@@ -193,6 +197,7 @@ func (e *CodeBuddyExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 		return nil, fmt.Errorf("codebuddy: missing access token")
 	}
 
+	conversationID := helps.ResolveBuddyConversationID(opts, req.Payload)
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
 
@@ -211,7 +216,7 @@ func (e *CodeBuddyExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 	}
 	translated = prepareCodeBuddyChatPayload(translated, domain)
 
-	httpResp, err := e.doCodeBuddyChat(ctx, auth, accessToken, userID, domain, translated)
+	httpResp, err := e.doCodeBuddyChat(ctx, auth, accessToken, userID, domain, translated, conversationID)
 	if err != nil {
 		return nil, err
 	}
@@ -306,7 +311,7 @@ func codeBuddyChatURL(domain string) string {
 	return codebuddy.APIBaseURLForDomain(domain) + codeBuddyChatPath
 }
 
-func (e *CodeBuddyExecutor) doCodeBuddyChat(ctx context.Context, auth *cliproxyauth.Auth, accessToken, userID, domain string, body []byte) (*http.Response, error) {
+func (e *CodeBuddyExecutor) doCodeBuddyChat(ctx context.Context, auth *cliproxyauth.Auth, accessToken, userID, domain string, body []byte, conversationID string) (*http.Response, error) {
 	url := codeBuddyChatURL(domain)
 	httpClient := newProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
 
@@ -317,13 +322,15 @@ func (e *CodeBuddyExecutor) doCodeBuddyChat(ctx context.Context, auth *cliproxya
 		authType, authValue = auth.AccountInfo()
 	}
 
+	// Keep one conversation across retries even when the client supplied no seed.
+	conversationID = helps.BuddyConversationUUID(codeBuddyConversationNamespace, conversationID)
 	var lastErr error
 	for attempt := 0; attempt <= codeBuddyTransientProviderRetries; attempt++ {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 		if err != nil {
 			return nil, err
 		}
-		e.applyHeaders(httpReq, accessToken, userID, domain)
+		e.applyCodeBuddyHeaders(httpReq, accessToken, userID, domain, conversationID)
 		httpReq.Header.Set("Cache-Control", "no-cache")
 		if attempt == 0 {
 			recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
@@ -610,8 +617,20 @@ func rewriteCodeBuddyRequestURL(req *http.Request, domain string) {
 
 // applyHeaders sets required headers for CodeBuddy API requests.
 func (e *CodeBuddyExecutor) applyHeaders(req *http.Request, accessToken, userID, domain string) {
+	e.applyCodeBuddyHeaders(req, accessToken, userID, domain, helps.BuddyHeaderConversationID(req.Header))
+}
+
+func (e *CodeBuddyExecutor) applyCodeBuddyHeaders(req *http.Request, accessToken, userID, domain, conversationID string) {
+	if req.Header == nil {
+		req.Header = make(http.Header)
+	}
+	// Remove differently cased aliases so raw requests send only one conversation ID.
+	for key := range req.Header {
+		if strings.EqualFold(key, "X-Conversation-ID") {
+			delete(req.Header, key)
+		}
+	}
 	requestID := strings.ReplaceAll(uuid.NewString(), "-", "")
-	conversationID := uuid.NewString()
 	messageID := strings.ReplaceAll(uuid.NewString(), "-", "")
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
@@ -630,7 +649,7 @@ func (e *CodeBuddyExecutor) applyHeaders(req *http.Request, accessToken, userID,
 	req.Header.Set("x-codebuddy-request", "1")
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 	req.Header.Set("X-Request-ID", requestID)
-	req.Header.Set("X-Conversation-ID", conversationID)
+	req.Header.Set("X-Conversation-ID", helps.BuddyConversationUUID(codeBuddyConversationNamespace, conversationID))
 	req.Header.Set("X-Conversation-Request-ID", requestID)
 	req.Header.Set("X-Conversation-Message-ID", messageID)
 }

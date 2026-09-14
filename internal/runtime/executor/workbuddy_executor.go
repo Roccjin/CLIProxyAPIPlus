@@ -18,10 +18,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/workbuddy"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
-	cliproxysession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -858,69 +858,9 @@ func clampWorkBuddyEffort(effort string, support *registry.ThinkingSupport) (str
 var workBuddyConversationNamespace = uuid.NewSHA1(uuid.NameSpaceURL, []byte("www.workbuddy.ai/conversation"))
 
 func workBuddyConversationUUID(seed string) string {
-	seed = strings.TrimSpace(seed)
-	if seed == "" {
-		return uuid.NewString()
-	}
-	if parsed, err := uuid.Parse(seed); err == nil {
-		return parsed.String()
-	}
-	return uuid.NewSHA1(workBuddyConversationNamespace, []byte(seed)).String()
+	return helps.BuddyConversationUUID(workBuddyConversationNamespace, seed)
 }
 
 func resolveWorkBuddyConversationID(opts cliproxyexecutor.Options, payload []byte) string {
-	if id := workBuddyHeaderConversationID(opts.Headers); id != "" {
-		return id
-	}
-	if id := cliproxysession.ExplicitID(opts.Headers, opts.OriginalRequest); id != "" {
-		return id
-	}
-	if id := cliproxysession.ExplicitID(nil, payload); id != "" {
-		return id
-	}
-	if id := workBuddyMetadataString(opts.Metadata, cliproxyexecutor.ExecutionSessionMetadataKey); id != "" {
-		return id
-	}
-	if id := workBuddyMetadataString(opts.Metadata, cliproxyexecutor.DerivedSessionIDMetadataKey); id != "" {
-		return id
-	}
-	return ""
-}
-
-func workBuddyHeaderConversationID(headers http.Header) string {
-	if headers == nil {
-		return ""
-	}
-	for _, name := range []string{
-		"X-Conversation-ID",
-		"X-Session-ID",
-		"Session-Id",
-		"Session_id",
-		"X-Claude-Code-Session-Id",
-		"X-Session-Affinity",
-		"X-Client-Request-Id",
-	} {
-		for key, values := range headers {
-			if !strings.EqualFold(key, name) {
-				continue
-			}
-			for _, value := range values {
-				if id := cliproxysession.NormalizeExplicitID(value); id != "" {
-					return id
-				}
-			}
-		}
-		if id := cliproxysession.NormalizeExplicitID(headers.Get(name)); id != "" {
-			return id
-		}
-	}
-	return ""
-}
-
-func workBuddyMetadataString(metadata map[string]any, key string) string {
-	if metadata == nil {
-		return ""
-	}
-	raw, _ := metadata[key].(string)
-	return cliproxysession.NormalizeExplicitID(raw)
+	return helps.ResolveBuddyConversationID(opts, payload)
 }
