@@ -159,7 +159,7 @@ func fetchWorkBuddyResourcePage(ctx context.Context, auth *cliproxyauth.Auth, cf
 
 	httpClient := newProxyAwareHTTPClient(ctx, cfg, auth, 0)
 	var lastErr error
-	for attempt := 0; attempt <= workBuddyTransientProviderRetries; attempt++ {
+	for attempt := 0; attempt <= workBuddyQuotaTransientRetries; attempt++ {
 		if attempt > 0 {
 			req, err = http.NewRequestWithContext(ctx, http.MethodPost, billingBase+workBuddyResourcePath, bytes.NewReader(rawBody))
 			if err != nil {
@@ -170,8 +170,12 @@ func fetchWorkBuddyResourcePage(ctx context.Context, auth *cliproxyauth.Auth, cf
 		resp, err := httpClient.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("workbuddy: resource request failed: %w", err)
-			if attempt < workBuddyTransientProviderRetries && isWorkBuddyTransientNetworkError(err) {
-				log.Warnf("workbuddy quota: transient network error: %v; retrying", err)
+			if attempt < workBuddyQuotaTransientRetries && isWorkBuddyTransientNetworkError(err) {
+				delay := workBuddyTransientRetryBackoff(attempt)
+				log.Warnf("workbuddy quota: transient network error: %v; retrying in %s", err, delay)
+				if errWait := workBuddyRetryWait(ctx, delay); errWait != nil {
+					return empty, errWait
+				}
 				continue
 			}
 			return empty, lastErr
@@ -185,8 +189,12 @@ func fetchWorkBuddyResourcePage(ctx context.Context, auth *cliproxyauth.Auth, cf
 		}
 		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 			lastErr = fmt.Errorf("workbuddy: resource status %d", resp.StatusCode)
-			if attempt < workBuddyTransientProviderRetries && isWorkBuddyQuotaRetryableStatus(resp.StatusCode) {
-				log.Warnf("workbuddy quota: retryable status %d; retrying", resp.StatusCode)
+			if attempt < workBuddyQuotaTransientRetries && isWorkBuddyQuotaRetryableStatus(resp.StatusCode) {
+				delay := workBuddyQuotaRetryDelay(attempt, resp.StatusCode, resp.Header)
+				log.Warnf("workbuddy quota: retryable status %d; retrying in %s", resp.StatusCode, delay)
+				if errWait := workBuddyRetryWait(ctx, delay); errWait != nil {
+					return empty, errWait
+				}
 				continue
 			}
 			return empty, lastErr
@@ -198,6 +206,47 @@ func fetchWorkBuddyResourcePage(ctx context.Context, auth *cliproxyauth.Auth, cf
 		return page, nil
 	}
 	return empty, lastErr
+}
+
+func workBuddyQuotaRetryDelay(attempt, status int, header http.Header) time.Duration {
+	if status == http.StatusTooManyRequests {
+		if delay, ok := workBuddyRetryAfterDelay(header); ok {
+			return delay
+		}
+	}
+	return workBuddyTransientRetryBackoff(attempt)
+}
+
+func workBuddyRetryAfterDelay(header http.Header) (time.Duration, bool) {
+	if header == nil {
+		return 0, false
+	}
+	raw := strings.TrimSpace(header.Get("Retry-After"))
+	if raw == "" {
+		return 0, false
+	}
+	if secs, err := strconv.ParseFloat(raw, 64); err == nil {
+		if secs <= 0 {
+			return 0, false
+		}
+		delay := time.Duration(secs * float64(time.Second))
+		if delay > workBuddyQuotaRetryAfterMax {
+			delay = workBuddyQuotaRetryAfterMax
+		}
+		return delay, true
+	}
+	when, err := http.ParseTime(raw)
+	if err != nil {
+		return 0, false
+	}
+	delay := time.Until(when)
+	if delay <= 0 {
+		return 0, false
+	}
+	if delay > workBuddyQuotaRetryAfterMax {
+		delay = workBuddyQuotaRetryAfterMax
+	}
+	return delay, true
 }
 
 func isWorkBuddyQuotaRetryableStatus(status int) bool {

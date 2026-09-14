@@ -23,12 +23,18 @@ const (
 	AppVersion = "5.5.2"
 	CLIVersion = "2.137.1"
 
-	UserAgentChat     = "WorkBuddy/" + AppVersion + " WorkBuddy/" + AppVersion + " CLI/" + CLIVersion
-	UserAgentAuthCN   = UserAgentChat
-	UserAgentAuthIntl = "workbuddy-ai/" + AppVersion + " workbuddy-ai/" + AppVersion + " CLI/" + CLIVersion
-	UserAgent         = UserAgentChat
-	ClientVersion     = AppVersion
-	IDEType           = "WorkBuddy"
+	// Chat UA is the official desktop RestOperations shape:
+	// WorkBuddy/<ver> <platform>/<ver> CLI/<cliVer>.
+	// International chat must use platform "WorkBuddy AI"; sending "WorkBuddy"
+	// on www.workbuddy.ai can trip upstream 403/11140 "request illegal".
+	UserAgentChatCN     = "WorkBuddy/" + AppVersion + " WorkBuddy/" + AppVersion + " CLI/" + CLIVersion
+	UserAgentChatGlobal = "WorkBuddy/" + AppVersion + " WorkBuddy AI/" + AppVersion + " CLI/" + CLIVersion
+	UserAgentChat       = UserAgentChatCN
+	UserAgentAuthCN     = UserAgentChatCN
+	UserAgentAuthIntl   = "workbuddy-ai/" + AppVersion + " workbuddy-ai/" + AppVersion + " CLI/" + CLIVersion
+	UserAgent           = UserAgentChatCN
+	ClientVersion       = AppVersion
+	IDEType             = "WorkBuddy"
 
 	PlatformCN     = "workbuddy"
 	PlatformIntl   = "workbuddy-ai"
@@ -150,6 +156,22 @@ func UserAgentForAuth(domain string) string {
 		return UserAgentAuthIntl
 	}
 	return UserAgentAuthCN
+}
+
+// UserAgentForChat returns the chat completions User-Agent for a token domain.
+func UserAgentForChat(domain string) string {
+	if IsGlobalDomain(domain) {
+		return UserAgentChatGlobal
+	}
+	return UserAgentChatCN
+}
+
+// AcceptLanguageForDomain returns the chat Accept-Language for a token domain.
+func AcceptLanguageForDomain(domain string) string {
+	if IsGlobalDomain(domain) {
+		return "en-US"
+	}
+	return "zh-CN"
 }
 
 func normalizeHost(value string) string {

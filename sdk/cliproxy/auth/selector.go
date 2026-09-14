@@ -612,10 +612,12 @@ func availabilityBlock(unavailable, quotaExceeded bool, nextRetryAfter, nextReco
 		}
 	}
 	if !next.IsZero() {
-		if quotaExceeded {
-			return true, blockReasonCooldown, next
-		}
-		return true, blockReasonOther, next
+		// Any future recovery deadline is a cooldown, including transient
+		// 5xx windows that set Unavailable+NextRetryAfter without quota.
+		// Counting those as blockReasonOther made a cooling pool report
+		// non-retryable auth_unavailable instead of model_cooldown with
+		// Retry-After.
+		return true, blockReasonCooldown, next
 	}
 	if hasRecoveryTime {
 		return false, blockReasonNone, time.Time{}

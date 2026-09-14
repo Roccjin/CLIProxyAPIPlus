@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
@@ -83,8 +84,11 @@ func extractRequestScopedErrorRules(auth *Auth, cfg *internalconfig.Config) []in
 			}
 		}
 	}
-	if cfg == nil || auth == nil {
+	if auth == nil {
 		return nil
+	}
+	if cfg == nil {
+		return defaultRequestScopedErrorRules(auth)
 	}
 
 	provider := strings.ToLower(strings.TrimSpace(auth.Provider))
@@ -139,6 +143,32 @@ func extractRequestScopedErrorRules(auth *Auth, cfg *internalconfig.Config) []in
 		}
 	}
 
+	return defaultRequestScopedErrorRules(auth)
+}
+
+// workBuddyDefaultRequestScopedErrors classifies WorkBuddy upstream faults that
+// should not follow the generic HTTP-status cooldown map:
+//
+//   - 11134 / "temporarily unavailable" is a provider blip: retry other
+//     credentials without cooling the account that hit it.
+//   - 11140 / "request illegal" is account-level security risk control: rotate
+//     away and cool that credential so the same account is not hammered.
+var workBuddyDefaultRequestScopedErrors = []internalconfig.RequestScopedErrorRule{
+	{Status: http.StatusInternalServerError, Match: []string{"11134", "temporarily unavailable"}, Action: RequestScopedActionContinue},
+	{Status: http.StatusBadGateway, Match: []string{"11134", "temporarily unavailable"}, Action: RequestScopedActionContinue},
+	{Status: http.StatusServiceUnavailable, Match: []string{"11134", "temporarily unavailable"}, Action: RequestScopedActionContinue},
+	{Status: http.StatusForbidden, Match: []string{"request illegal", "11140"}, Action: RequestScopedActionContinueAndCooldown},
+	{Status: http.StatusBadRequest, Match: []string{"request illegal", "11140"}, Action: RequestScopedActionContinueAndCooldown},
+	{Status: http.StatusInternalServerError, Match: []string{"request illegal", "11140"}, Action: RequestScopedActionContinueAndCooldown},
+}
+
+func defaultRequestScopedErrorRules(auth *Auth) []internalconfig.RequestScopedErrorRule {
+	if auth == nil {
+		return nil
+	}
+	if strings.EqualFold(strings.TrimSpace(auth.Provider), "workbuddy") {
+		return workBuddyDefaultRequestScopedErrors
+	}
 	return nil
 }
 
@@ -176,6 +206,7 @@ func matchRequestScopedErrorAction(auth *Auth, err error, cfg *internalconfig.Co
 
 	statusCode := statusCodeFromError(err)
 	body := extractErrorBody(err)
+	bodyLower := strings.ToLower(body)
 
 	for _, rule := range rules {
 		if rule.Status <= 0 || rule.Status != statusCode {
@@ -187,7 +218,7 @@ func matchRequestScopedErrorAction(auth *Auth, err error, cfg *internalconfig.Co
 
 		matched := false
 		for _, substr := range rule.Match {
-			if substr != "" && strings.Contains(body, substr) {
+			if substr != "" && strings.Contains(bodyLower, strings.ToLower(substr)) {
 				matched = true
 				break
 			}

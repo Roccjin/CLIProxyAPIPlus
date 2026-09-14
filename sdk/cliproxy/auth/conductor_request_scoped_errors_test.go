@@ -1238,3 +1238,282 @@ func TestRequestScopedErrors_ResponseBodyProvider_MatchesUnderlyingPayload(t *te
 		t.Fatal("expected auth1 to be in cooldown when matching ResponseBody()")
 	}
 }
+
+func TestWorkBuddy11134DoesNotCooldownAuth(t *testing.T) {
+	previous := quotaCooldownDisabled.Load()
+	quotaCooldownDisabled.Store(false)
+	t.Cleanup(func() { quotaCooldownDisabled.Store(previous) })
+
+	m := NewManager(nil, nil, nil)
+
+	auth1 := &Auth{
+		ID:       "auth-workbuddy-1",
+		Provider: "workbuddy",
+		Status:   StatusActive,
+	}
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth1.ID, "workbuddy", []*registry.ModelInfo{{ID: "gpt-6-astra"}})
+	t.Cleanup(func() { reg.UnregisterClient(auth1.ID) })
+
+	if _, err := m.Register(context.Background(), auth1); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	execCount := 0
+	exec := &mockCustomErrorExecutor{
+		identifier: "workbuddy",
+		executeFn: func(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+			execCount++
+			return cliproxyexecutor.Response{}, customStatusError{
+				code: http.StatusInternalServerError,
+				msg:  `{"type":"error","code":"11134"}`,
+			}
+		},
+	}
+	m.RegisterExecutor(exec)
+
+	_, errExec := m.Execute(context.Background(), []string{"workbuddy"}, cliproxyexecutor.Request{Model: "gpt-6-astra"}, cliproxyexecutor.Options{})
+	if errExec == nil {
+		t.Fatal("expected 11134 error")
+	}
+
+	updated, ok := m.GetByID(auth1.ID)
+	if !ok || updated == nil {
+		t.Fatal("expected auth to remain registered")
+	}
+	if updated.Unavailable || !updated.NextRetryAfter.IsZero() {
+		t.Fatalf("11134 cooled the workbuddy auth: unavailable=%v next=%v", updated.Unavailable, updated.NextRetryAfter)
+	}
+	if state := updated.ModelStates["gpt-6-astra"]; state != nil && (state.Unavailable || !state.NextRetryAfter.IsZero()) {
+		t.Fatalf("11134 cooled the workbuddy model state: %#v", state)
+	}
+
+	_, errExec = m.Execute(context.Background(), []string{"workbuddy"}, cliproxyexecutor.Request{Model: "gpt-6-astra"}, cliproxyexecutor.Options{})
+	if errExec == nil {
+		t.Fatal("expected second 11134 error")
+	}
+	if execCount != 2 {
+		t.Fatalf("execCount = %d, want 2 (second request must still pick the same auth, not auth_unavailable)", execCount)
+	}
+}
+
+func TestWorkBuddy11134RotatesToNextCredential(t *testing.T) {
+	previous := quotaCooldownDisabled.Load()
+	quotaCooldownDisabled.Store(false)
+	t.Cleanup(func() { quotaCooldownDisabled.Store(previous) })
+
+	m := NewManager(nil, nil, nil)
+
+	auth1 := &Auth{ID: "auth-workbuddy-a", Provider: "workbuddy", Status: StatusActive, Attributes: map[string]string{"priority": "10"}}
+	auth2 := &Auth{ID: "auth-workbuddy-b", Provider: "workbuddy", Status: StatusActive}
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth1.ID, "workbuddy", []*registry.ModelInfo{{ID: "gpt-5.6-sol"}})
+	reg.RegisterClient(auth2.ID, "workbuddy", []*registry.ModelInfo{{ID: "gpt-5.6-sol"}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth1.ID)
+		reg.UnregisterClient(auth2.ID)
+	})
+	if _, err := m.Register(context.Background(), auth1); err != nil {
+		t.Fatalf("register auth1: %v", err)
+	}
+	if _, err := m.Register(context.Background(), auth2); err != nil {
+		t.Fatalf("register auth2: %v", err)
+	}
+
+	execCount := 0
+	exec := &mockCustomErrorExecutor{
+		identifier: "workbuddy",
+		executeFn: func(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+			execCount++
+			if auth.ID == auth1.ID {
+				return cliproxyexecutor.Response{}, customStatusError{
+					code: http.StatusInternalServerError,
+					msg:  `{"code":11134,"msg":"the model provider is temporarily unavailable, please retry later or switch to another model"}`,
+				}
+			}
+			return cliproxyexecutor.Response{Payload: []byte(`{"ok":true}`)}, nil
+		},
+	}
+	m.RegisterExecutor(exec)
+
+	resp, errExec := m.Execute(context.Background(), []string{"workbuddy"}, cliproxyexecutor.Request{Model: "gpt-5.6-sol"}, cliproxyexecutor.Options{})
+	if errExec != nil {
+		t.Fatalf("unexpected error: %v", errExec)
+	}
+	if string(resp.Payload) != `{"ok":true}` {
+		t.Fatalf("payload = %s", resp.Payload)
+	}
+	if execCount != 2 {
+		t.Fatalf("execCount = %d, want 2", execCount)
+	}
+
+	a1, _ := m.GetByID(auth1.ID)
+	if a1.Unavailable || !a1.NextRetryAfter.IsZero() {
+		t.Fatalf("first workbuddy auth was cooled after 11134: unavailable=%v next=%v", a1.Unavailable, a1.NextRetryAfter)
+	}
+}
+
+func TestMatchRequestScopedErrorAction_WorkBuddy11134Default(t *testing.T) {
+	t.Parallel()
+
+	auth := &Auth{ID: "wb", Provider: "workbuddy"}
+	err11134 := customStatusError{code: http.StatusInternalServerError, msg: `{"type":"error","code":"11134"}`}
+	action, ok := matchRequestScopedErrorAction(auth, err11134, nil)
+	if !ok || action != RequestScopedActionContinue {
+		t.Fatalf("action = %q ok=%v, want continue", action, ok)
+	}
+}
+
+func TestMatchRequestScopedErrorAction_WorkBuddy11140Default(t *testing.T) {
+	t.Parallel()
+
+	auth := &Auth{ID: "wb", Provider: "workbuddy"}
+	err11140 := customStatusError{
+		code: http.StatusForbidden,
+		msg:  `{"code":-32603,"message":"Internal error","data":{"details":"403 request illegal (abc/def)","statusCode":403,"code":11140,"category":"internal"}}`,
+	}
+	action, ok := matchRequestScopedErrorAction(auth, err11140, nil)
+	if !ok || action != RequestScopedActionContinueAndCooldown {
+		t.Fatalf("action = %q ok=%v, want continue-and-cooldown", action, ok)
+	}
+
+	err400Numeric := customStatusError{code: http.StatusBadRequest, msg: `{"code":11140}`}
+	action, ok = matchRequestScopedErrorAction(auth, err400Numeric, nil)
+	if !ok || action != RequestScopedActionContinueAndCooldown {
+		t.Fatalf("HTTP 400 numeric 11140 action = %q ok=%v, want continue-and-cooldown", action, ok)
+	}
+
+	errCased := customStatusError{
+		code: http.StatusForbidden,
+		msg:  `{"data":{"details":"403 Request Illegal (abc/def)"}}`,
+	}
+	action, ok = matchRequestScopedErrorAction(auth, errCased, nil)
+	if !ok || action != RequestScopedActionContinueAndCooldown {
+		t.Fatalf("case-insensitive 11140 action = %q ok=%v, want continue-and-cooldown", action, ok)
+	}
+
+	err11128 := customStatusError{code: http.StatusBadRequest, msg: `{"code":11128,"msg":"Illegal API invocation"}`}
+	if action, ok = matchRequestScopedErrorAction(auth, err11128, nil); ok {
+		t.Fatalf("11128 should not match 11140 rules, got action %q", action)
+	}
+}
+
+func TestWorkBuddy11140CoolsAndRotates(t *testing.T) {
+	previous := quotaCooldownDisabled.Load()
+	quotaCooldownDisabled.Store(false)
+	t.Cleanup(func() { quotaCooldownDisabled.Store(previous) })
+
+	m := NewManager(nil, nil, nil)
+
+	auth1 := &Auth{ID: "auth-workbuddy-risk-a", Provider: "workbuddy", Status: StatusActive, Attributes: map[string]string{"priority": "10"}}
+	auth2 := &Auth{ID: "auth-workbuddy-risk-b", Provider: "workbuddy", Status: StatusActive}
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth1.ID, "workbuddy", []*registry.ModelInfo{{ID: "gpt-6-astra"}})
+	reg.RegisterClient(auth2.ID, "workbuddy", []*registry.ModelInfo{{ID: "gpt-6-astra"}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth1.ID)
+		reg.UnregisterClient(auth2.ID)
+	})
+	if _, err := m.Register(context.Background(), auth1); err != nil {
+		t.Fatalf("register auth1: %v", err)
+	}
+	if _, err := m.Register(context.Background(), auth2); err != nil {
+		t.Fatalf("register auth2: %v", err)
+	}
+
+	execCount := 0
+	exec := &mockCustomErrorExecutor{
+		identifier: "workbuddy",
+		executeFn: func(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+			execCount++
+			if auth.ID == auth1.ID {
+				return cliproxyexecutor.Response{}, customStatusError{
+					code: http.StatusForbidden,
+					msg:  `{"error":{"data":{"code":11140,"msg":"request illegal"}}}`,
+				}
+			}
+			return cliproxyexecutor.Response{Payload: []byte(`{"ok":true}`)}, nil
+		},
+	}
+	m.RegisterExecutor(exec)
+
+	resp, errExec := m.Execute(context.Background(), []string{"workbuddy"}, cliproxyexecutor.Request{Model: "gpt-6-astra"}, cliproxyexecutor.Options{})
+	if errExec != nil {
+		t.Fatalf("unexpected error: %v", errExec)
+	}
+	if string(resp.Payload) != `{"ok":true}` {
+		t.Fatalf("payload = %s", resp.Payload)
+	}
+	if execCount != 2 {
+		t.Fatalf("execCount = %d, want 2", execCount)
+	}
+
+	a1, _ := m.GetByID(auth1.ID)
+	if !a1.Unavailable || a1.NextRetryAfter.IsZero() {
+		t.Fatalf("11140 request illegal should cool the triggering account, got unavailable=%v next=%v", a1.Unavailable, a1.NextRetryAfter)
+	}
+	a2, _ := m.GetByID(auth2.ID)
+	if a2.Unavailable || !a2.NextRetryAfter.IsZero() {
+		t.Fatalf("second account should stay available, got unavailable=%v next=%v", a2.Unavailable, a2.NextRetryAfter)
+	}
+}
+
+func TestWorkBuddy11140HTTP400NumericCoolsAndRotates(t *testing.T) {
+	previous := quotaCooldownDisabled.Load()
+	quotaCooldownDisabled.Store(false)
+	t.Cleanup(func() { quotaCooldownDisabled.Store(previous) })
+
+	m := NewManager(nil, nil, nil)
+
+	auth1 := &Auth{ID: "auth-workbuddy-risk-400-a", Provider: "workbuddy", Status: StatusActive, Attributes: map[string]string{"priority": "10"}}
+	auth2 := &Auth{ID: "auth-workbuddy-risk-400-b", Provider: "workbuddy", Status: StatusActive}
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(auth1.ID, "workbuddy", []*registry.ModelInfo{{ID: "gpt-6-astra"}})
+	reg.RegisterClient(auth2.ID, "workbuddy", []*registry.ModelInfo{{ID: "gpt-6-astra"}})
+	t.Cleanup(func() {
+		reg.UnregisterClient(auth1.ID)
+		reg.UnregisterClient(auth2.ID)
+	})
+	if _, err := m.Register(context.Background(), auth1); err != nil {
+		t.Fatalf("register auth1: %v", err)
+	}
+	if _, err := m.Register(context.Background(), auth2); err != nil {
+		t.Fatalf("register auth2: %v", err)
+	}
+
+	execCount := 0
+	exec := &mockCustomErrorExecutor{
+		identifier: "workbuddy",
+		executeFn: func(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+			execCount++
+			if auth.ID == auth1.ID {
+				return cliproxyexecutor.Response{}, customStatusError{
+					code: http.StatusBadRequest,
+					msg:  `{"code":11140}`,
+				}
+			}
+			return cliproxyexecutor.Response{Payload: []byte(`{"ok":true}`)}, nil
+		},
+	}
+	m.RegisterExecutor(exec)
+
+	resp, errExec := m.Execute(context.Background(), []string{"workbuddy"}, cliproxyexecutor.Request{Model: "gpt-6-astra"}, cliproxyexecutor.Options{})
+	if errExec != nil {
+		t.Fatalf("unexpected error: %v", errExec)
+	}
+	if string(resp.Payload) != `{"ok":true}` {
+		t.Fatalf("payload = %s", resp.Payload)
+	}
+	if execCount != 2 {
+		t.Fatalf("execCount = %d, want 2", execCount)
+	}
+
+	a1, _ := m.GetByID(auth1.ID)
+	if !a1.Unavailable || a1.NextRetryAfter.IsZero() {
+		t.Fatalf("HTTP 400 11140 should cool the triggering account, got unavailable=%v next=%v", a1.Unavailable, a1.NextRetryAfter)
+	}
+	a2, _ := m.GetByID(auth2.ID)
+	if a2.Unavailable || !a2.NextRetryAfter.IsZero() {
+		t.Fatalf("second account should stay available, got unavailable=%v next=%v", a2.Unavailable, a2.NextRetryAfter)
+	}
+}

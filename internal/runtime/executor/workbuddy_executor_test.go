@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/workbuddy"
@@ -77,8 +80,23 @@ func TestWorkBuddyApplyHeaders_InternationalShape(t *testing.T) {
 	if got := req.Header.Get("X-Private-Data"); got != "true" {
 		t.Errorf("X-Private-Data = %s", got)
 	}
-	if got := req.Header.Get("User-Agent"); got != workbuddy.UserAgentChat {
-		t.Errorf("User-Agent = %s", got)
+	if got := req.Header.Get("User-Agent"); got != workbuddy.UserAgentChatGlobal {
+		t.Errorf("User-Agent = %s, want %s", got, workbuddy.UserAgentChatGlobal)
+	}
+	if got := req.Header.Get("Origin"); got != "https://www.workbuddy.ai" {
+		t.Errorf("Origin = %s", got)
+	}
+	if got := req.Header.Get("Referer"); got != "https://www.workbuddy.ai/" {
+		t.Errorf("Referer = %s", got)
+	}
+	if got := req.Header.Get("Accept-Language"); got != "en-US" {
+		t.Errorf("Accept-Language = %s", got)
+	}
+	if got := req.Header.Get("X-No-Enterprise-Id"); got != "1" {
+		t.Errorf("X-No-Enterprise-Id = %s", got)
+	}
+	if got := req.Header.Get("X-Product"); got != workbuddy.IDEType {
+		t.Errorf("X-Product = %s", got)
 	}
 	if req.Header.Get("X-Request-ID") == "" || req.Header.Get("X-Conversation-ID") == "" {
 		t.Fatal("expected conversation request ids")
@@ -88,6 +106,74 @@ func TestWorkBuddyApplyHeaders_InternationalShape(t *testing.T) {
 	}
 	if req.Header.Get("X-Conversation-Request-ID") == req.Header.Get("X-Request-ID") {
 		t.Fatal("X-Conversation-Request-ID should not reuse X-Request-ID")
+	}
+}
+
+func TestWorkBuddyApplyHeaders_CNShape(t *testing.T) {
+	t.Parallel()
+
+	req, err := http.NewRequest(http.MethodPost, "https://www.workbuddy.cn/v2/chat/completions", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := NewWorkBuddyExecutor(nil)
+	exec.applyHeaders(req, "token", "user-1", workbuddy.DefaultDomain)
+
+	if got := req.Header.Get("User-Agent"); got != workbuddy.UserAgentChatCN {
+		t.Errorf("User-Agent = %s, want %s", got, workbuddy.UserAgentChatCN)
+	}
+	if got := req.Header.Get("Accept-Language"); got != "zh-CN" {
+		t.Errorf("Accept-Language = %s", got)
+	}
+	if got := req.Header.Get("Origin"); got != "https://www.workbuddy.cn" {
+		t.Errorf("Origin = %s", got)
+	}
+}
+
+func TestIsWorkBuddyAccountRiskControl(t *testing.T) {
+	t.Parallel()
+
+	rpc := []byte(`{"code":-32603,"message":"Internal error","data":{"details":"403 request illegal (abc/def)","statusCode":403,"code":11140,"category":"internal"}}`)
+	if !isWorkBuddyAccountRiskControl(http.StatusForbidden, rpc) {
+		t.Fatal("expected JSON-RPC 11140 request illegal to be account risk control")
+	}
+	if !isWorkBuddyAccountRiskControl(http.StatusForbidden, []byte(`{"error":{"data":{"code":11140,"msg":"request illegal"}}}`)) {
+		t.Fatal("expected nested 11140 request illegal to be account risk control")
+	}
+	if !isWorkBuddyAccountRiskControl(http.StatusBadRequest, []byte(`{"code":11140}`)) {
+		t.Fatal("expected HTTP 400 numeric 11140 to be account risk control")
+	}
+	if isWorkBuddyAccountRiskControl(http.StatusInternalServerError, []byte(`{"type":"error","code":"11134"}`)) {
+		t.Fatal("11134 is not account risk control")
+	}
+}
+
+func TestDoWorkBuddyChatDoesNotRetry11140(t *testing.T) {
+	var calls atomic.Int32
+	ctx := context.WithValue(t.Context(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return &http.Response{
+			StatusCode: http.StatusForbidden,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"data":{"code":11140,"msg":"request illegal"}}}`)),
+		}, nil
+	}))
+
+	exec := NewWorkBuddyExecutor(nil)
+	auth := &cliproxyauth.Auth{
+		ID: "wb-1",
+		Metadata: map[string]any{
+			"access_token": "token",
+			"user_id":      "user-1",
+			"domain":       workbuddy.DefaultDomainGlobal,
+		},
+	}
+	_, err := exec.doWorkBuddyChat(ctx, auth, "token", "user-1", workbuddy.DefaultDomainGlobal, []byte(`{"model":"gpt-6-astra"}`), "")
+	if err == nil {
+		t.Fatal("expected 11140 error")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("upstream calls = %d, want 1 (11140 must not be retried on the same account)", got)
 	}
 }
 
@@ -428,6 +514,69 @@ func TestNormalizeWorkBuddyChatStreamLine_LeavesDoneAndChunk(t *testing.T) {
 	chunk := []byte(`data: {"object":"chat.completion.chunk","choices":[]}`)
 	if got := normalizeWorkBuddyChatStreamLine(chunk); string(got) != string(chunk) {
 		t.Fatalf("chunk object changed: %s", got)
+	}
+}
+
+func TestWorkBuddyTransientRetryBackoff(t *testing.T) {
+	t.Parallel()
+
+	if got := workBuddyTransientRetryBackoff(0); got != 400*time.Millisecond {
+		t.Fatalf("attempt 0 = %s, want 400ms", got)
+	}
+	if got := workBuddyTransientRetryBackoff(1); got != 800*time.Millisecond {
+		t.Fatalf("attempt 1 = %s, want 800ms", got)
+	}
+	if got := workBuddyTransientRetryBackoff(2); got != 1600*time.Millisecond {
+		t.Fatalf("attempt 2 = %s, want 1.6s", got)
+	}
+	if got := workBuddyTransientRetryBackoff(3); got != 2*time.Second {
+		t.Fatalf("attempt 3 = %s, want 2s cap", got)
+	}
+}
+
+func TestDoWorkBuddyChatRetries11134ThenSucceeds(t *testing.T) {
+	previousWait := workBuddyRetryWait
+	workBuddyRetryWait = func(context.Context, time.Duration) error { return nil }
+	t.Cleanup(func() { workBuddyRetryWait = previousWait })
+
+	var calls atomic.Int32
+	ctx := context.WithValue(t.Context(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		n := calls.Add(1)
+		if n < 3 {
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Header:     http.Header{"Content-Type": {"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"type":"error","code":"11134"}`)),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"ok","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`)),
+		}, nil
+	}))
+
+	exec := NewWorkBuddyExecutor(nil)
+	auth := &cliproxyauth.Auth{
+		ID: "wb-1",
+		Metadata: map[string]any{
+			"access_token": "token",
+			"user_id":      "user-1",
+			"domain":       workbuddy.DefaultDomainGlobal,
+		},
+	}
+	resp, err := exec.doWorkBuddyChat(ctx, auth, "token", "user-1", workbuddy.DefaultDomainGlobal, []byte(`{"model":"gpt-6-astra"}`), "")
+	if err != nil {
+		t.Fatalf("doWorkBuddyChat after 11134 retries: %v", err)
+	}
+	if resp == nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %v, want 200", resp)
+	}
+	if errClose := resp.Body.Close(); errClose != nil {
+		t.Fatalf("close body: %v", errClose)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("upstream calls = %d, want 3", got)
 	}
 }
 

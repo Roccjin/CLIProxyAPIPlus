@@ -1,6 +1,9 @@
 package workbuddy
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseSite(t *testing.T) {
 	t.Parallel()
@@ -80,6 +83,34 @@ func TestIsWorkBuddyDomain(t *testing.T) {
 		if got := IsWorkBuddyDomain(tc.domain); got != tc.want {
 			t.Errorf("IsWorkBuddyDomain(%q) = %v, want %v", tc.domain, got, tc.want)
 		}
+	}
+}
+
+func TestUserAgentForChat(t *testing.T) {
+	t.Parallel()
+
+	if got := UserAgentForChat("www.workbuddy.ai"); got != UserAgentChatGlobal {
+		t.Fatalf("global chat UA = %q, want %q", got, UserAgentChatGlobal)
+	}
+	if !strings.Contains(UserAgentChatGlobal, "WorkBuddy AI/") {
+		t.Fatalf("global chat UA %q missing WorkBuddy AI platform segment", UserAgentChatGlobal)
+	}
+	if got := UserAgentForChat("www.workbuddy.cn"); got != UserAgentChatCN {
+		t.Fatalf("cn chat UA = %q, want %q", got, UserAgentChatCN)
+	}
+	if strings.Contains(UserAgentChatCN, "WorkBuddy AI/") {
+		t.Fatalf("cn chat UA %q must not use the international platform segment", UserAgentChatCN)
+	}
+}
+
+func TestAcceptLanguageForDomain(t *testing.T) {
+	t.Parallel()
+
+	if got := AcceptLanguageForDomain("www.workbuddy.ai"); got != "en-US" {
+		t.Fatalf("global Accept-Language = %q, want en-US", got)
+	}
+	if got := AcceptLanguageForDomain("www.workbuddy.cn"); got != "zh-CN" {
+		t.Fatalf("cn Accept-Language = %q, want zh-CN", got)
 	}
 }
 

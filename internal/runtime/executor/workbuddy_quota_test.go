@@ -3,11 +3,13 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/workbuddy"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -124,7 +126,9 @@ func TestParseWorkBuddyResourcePage_EmptyDataIsZeroQuota(t *testing.T) {
 }
 
 func TestFetchWorkBuddyQuotaFromBase_RetriesServerError(t *testing.T) {
-	t.Parallel()
+	previousWait := workBuddyRetryWait
+	workBuddyRetryWait = func(context.Context, time.Duration) error { return nil }
+	t.Cleanup(func() { workBuddyRetryWait = previousWait })
 
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -169,6 +173,135 @@ func TestFetchWorkBuddyQuotaFromBase_RetriesServerError(t *testing.T) {
 	}
 	if quota.TotalRemain != 7 || quota.PackCount != 1 {
 		t.Fatalf("quota = %+v", quota)
+	}
+}
+
+func TestFetchWorkBuddyQuotaFromBase_Persistent502StopsAtQuotaRetryLimit(t *testing.T) {
+	var waited []time.Duration
+	previousWait := workBuddyRetryWait
+	workBuddyRetryWait = func(_ context.Context, d time.Duration) error {
+		waited = append(waited, d)
+		return nil
+	}
+	t.Cleanup(func() { workBuddyRetryWait = previousWait })
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"code":1,"msg":"busy"}`))
+	}))
+	defer srv.Close()
+
+	auth := &cliproxyauth.Auth{Metadata: map[string]any{
+		"access_token": "token",
+		"user_id":      "user-1",
+		"domain":       workbuddy.DefaultDomainGlobal,
+	}}
+	_, err := fetchWorkBuddyQuotaFromBase(context.Background(), auth, nil, srv.URL, "token", "user-1", workbuddy.DefaultDomainGlobal)
+	if err == nil {
+		t.Fatal("expected persistent 502 to fail")
+	}
+	wantCalls := int32(workBuddyQuotaTransientRetries + 1)
+	if calls.Load() != wantCalls {
+		t.Fatalf("calls = %d, want %d", calls.Load(), wantCalls)
+	}
+	if len(waited) != workBuddyQuotaTransientRetries {
+		t.Fatalf("backoff waits = %d, want %d (%v)", len(waited), workBuddyQuotaTransientRetries, waited)
+	}
+	if len(waited) > 0 && waited[0] != workBuddyTransientRetryBaseDelay {
+		t.Fatalf("first backoff = %s, want %s", waited[0], workBuddyTransientRetryBaseDelay)
+	}
+}
+
+func TestFetchWorkBuddyQuotaFromBase_HonorsRetryAfterOn429(t *testing.T) {
+	var waited []time.Duration
+	previousWait := workBuddyRetryWait
+	workBuddyRetryWait = func(_ context.Context, d time.Duration) error {
+		waited = append(waited, d)
+		return nil
+	}
+	t.Cleanup(func() { workBuddyRetryWait = previousWait })
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"code":1,"msg":"rate limited"}`))
+	}))
+	defer srv.Close()
+
+	auth := &cliproxyauth.Auth{Metadata: map[string]any{
+		"access_token": "token",
+		"user_id":      "user-1",
+		"domain":       workbuddy.DefaultDomainGlobal,
+	}}
+	_, err := fetchWorkBuddyQuotaFromBase(context.Background(), auth, nil, srv.URL, "token", "user-1", workbuddy.DefaultDomainGlobal)
+	if err == nil {
+		t.Fatal("expected persistent 429 to fail")
+	}
+	wantCalls := int32(workBuddyQuotaTransientRetries + 1)
+	if calls.Load() != wantCalls {
+		t.Fatalf("calls = %d, want %d", calls.Load(), wantCalls)
+	}
+	if len(waited) != 1 || waited[0] != 7*time.Second {
+		t.Fatalf("waited = %v, want [7s]", waited)
+	}
+}
+
+func TestFetchWorkBuddyQuotaFromBase_ContextCancelDuringBackoff(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	previousWait := workBuddyRetryWait
+	workBuddyRetryWait = func(ctx context.Context, _ time.Duration) error {
+		cancel()
+		return ctx.Err()
+	}
+	t.Cleanup(func() { workBuddyRetryWait = previousWait })
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"code":1,"msg":"busy"}`))
+	}))
+	defer srv.Close()
+
+	auth := &cliproxyauth.Auth{Metadata: map[string]any{
+		"access_token": "token",
+		"user_id":      "user-1",
+		"domain":       workbuddy.DefaultDomainGlobal,
+	}}
+	_, err := fetchWorkBuddyQuotaFromBase(ctx, auth, nil, srv.URL, "token", "user-1", workbuddy.DefaultDomainGlobal)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("calls = %d, want 1 (must not retry after cancel)", calls.Load())
+	}
+}
+
+func TestWorkBuddyRetryAfterDelay(t *testing.T) {
+	t.Parallel()
+
+	h := http.Header{}
+	h.Set("Retry-After", "7")
+	delay, ok := workBuddyRetryAfterDelay(h)
+	if !ok || delay != 7*time.Second {
+		t.Fatalf("Retry-After 7 = %s ok=%v, want 7s", delay, ok)
+	}
+
+	h.Set("Retry-After", "120")
+	delay, ok = workBuddyRetryAfterDelay(h)
+	if !ok || delay != workBuddyQuotaRetryAfterMax {
+		t.Fatalf("Retry-After 120 = %s ok=%v, want cap %s", delay, ok, workBuddyQuotaRetryAfterMax)
+	}
+
+	h.Set("Retry-After", "0")
+	if delay, ok = workBuddyRetryAfterDelay(h); ok {
+		t.Fatalf("Retry-After 0 should be ignored, got %s", delay)
 	}
 }
 

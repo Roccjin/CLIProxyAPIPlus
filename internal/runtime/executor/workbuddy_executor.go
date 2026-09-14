@@ -32,7 +32,11 @@ const (
 	workBuddyChatPath                 = "/v2/chat/completions"
 	workBuddyAuthType                 = "workbuddy"
 	workBuddyDefaultSystemPrompt      = "You are a helpful assistant."
-	workBuddyTransientProviderRetries = 1
+	workBuddyTransientProviderRetries = 3
+	workBuddyQuotaTransientRetries    = 1
+	workBuddyTransientRetryBaseDelay  = 400 * time.Millisecond
+	workBuddyTransientRetryMaxDelay   = 2 * time.Second
+	workBuddyQuotaRetryAfterMax       = 30 * time.Second
 )
 
 // Official CLI chat bodies only send these fields. Open WebUI and similar
@@ -382,7 +386,11 @@ func (e *WorkBuddyExecutor) doWorkBuddyChat(ctx context.Context, auth *cliproxya
 			recordAPIResponseError(ctx, e.cfg, err)
 			lastErr = err
 			if attempt < workBuddyTransientProviderRetries && isWorkBuddyTransientNetworkError(err) {
-				log.Warnf("workbuddy executor: transient network error: %v; retrying", err)
+				delay := workBuddyTransientRetryBackoff(attempt)
+				log.Warnf("workbuddy executor: transient network error: %v; retrying in %s", err, delay)
+				if errWait := workBuddyRetryWait(ctx, delay); errWait != nil {
+					return nil, errWait
+				}
 				continue
 			}
 			return nil, err
@@ -399,14 +407,75 @@ func (e *WorkBuddyExecutor) doWorkBuddyChat(ctx context.Context, auth *cliproxya
 		appendAPIResponseChunk(ctx, e.cfg, errBody)
 		summary := summarizeErrorBody(httpResp.Header.Get("Content-Type"), errBody)
 		lastErr = statusErr{code: httpResp.StatusCode, msg: string(errBody)}
+		if isWorkBuddyAccountRiskControl(httpResp.StatusCode, errBody) {
+			log.Warnf("workbuddy executor: account risk control status: %d, body: %s", httpResp.StatusCode, summary)
+			return nil, lastErr
+		}
 		if attempt < workBuddyTransientProviderRetries && isWorkBuddyTransientProviderError(httpResp.StatusCode, errBody) {
-			log.Warnf("workbuddy executor: transient upstream error status: %d, body: %s; retrying", httpResp.StatusCode, summary)
+			delay := workBuddyTransientRetryBackoff(attempt)
+			log.Warnf("workbuddy executor: transient upstream error status: %d, body: %s; retrying in %s", httpResp.StatusCode, summary, delay)
+			if errWait := workBuddyRetryWait(ctx, delay); errWait != nil {
+				return nil, errWait
+			}
 			continue
 		}
 		log.Warnf("workbuddy executor: upstream error status: %d, body: %s", httpResp.StatusCode, summary)
 		return nil, lastErr
 	}
 	return nil, lastErr
+}
+
+func workBuddyTransientRetryBackoff(attempt int) time.Duration {
+	if attempt < 0 {
+		return workBuddyTransientRetryBaseDelay
+	}
+	delay := workBuddyTransientRetryBaseDelay
+	for i := 0; i < attempt; i++ {
+		if delay >= workBuddyTransientRetryMaxDelay {
+			return workBuddyTransientRetryMaxDelay
+		}
+		delay *= 2
+	}
+	if delay > workBuddyTransientRetryMaxDelay {
+		return workBuddyTransientRetryMaxDelay
+	}
+	return delay
+}
+
+var workBuddyRetryWait = waitWorkBuddyRetry
+
+func waitWorkBuddyRetry(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func isWorkBuddyAccountRiskControl(status int, body []byte) bool {
+	switch status {
+	case http.StatusBadRequest, http.StatusForbidden, http.StatusInternalServerError:
+	default:
+		return false
+	}
+	blob := strings.ToLower(strings.Join([]string{
+		gjson.GetBytes(body, "code").String(),
+		gjson.GetBytes(body, "msg").String(),
+		gjson.GetBytes(body, "message").String(),
+		gjson.GetBytes(body, "data.details").String(),
+		gjson.GetBytes(body, "data.code").String(),
+		gjson.GetBytes(body, "error.data.details").String(),
+		gjson.GetBytes(body, "error.data.code").String(),
+		gjson.GetBytes(body, "error.message").String(),
+		string(body),
+	}, " "))
+	return strings.Contains(blob, "request illegal") || strings.Contains(blob, "11140")
 }
 
 func isWorkBuddyTransientProviderError(status int, body []byte) bool {
@@ -726,13 +795,18 @@ func (e *WorkBuddyExecutor) applyHeaders(req *http.Request, accessToken, userID,
 func (e *WorkBuddyExecutor) applyWorkBuddyHeaders(req *http.Request, accessToken, userID, domain, conversationID string) {
 	requestID := strings.ReplaceAll(uuid.NewString(), "-", "")
 	conversationRequestID := strings.ReplaceAll(uuid.NewString(), "-", "")
+	origin := workbuddy.OriginForDomain(domain)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", workbuddy.UserAgentChat)
+	req.Header.Set("Accept-Language", workbuddy.AcceptLanguageForDomain(domain))
+	req.Header.Set("User-Agent", workbuddy.UserAgentForChat(domain))
+	req.Header.Set("Origin", origin)
+	req.Header.Set("Referer", origin+"/")
 	req.Header.Set("X-User-Id", userID)
 	req.Header.Set("X-Domain", domain)
-	req.Header.Set("X-Product", "SaaS")
+	req.Header.Set("X-No-Enterprise-Id", "1")
+	req.Header.Set("X-Product", workbuddy.IDEType)
 	req.Header.Set("X-IDE-Type", workbuddy.IDEType)
 	req.Header.Set("X-IDE-Name", workbuddy.IDEType)
 	req.Header.Set("X-IDE-Version", workbuddy.AppVersion)
@@ -746,6 +820,7 @@ func (e *WorkBuddyExecutor) applyWorkBuddyHeaders(req *http.Request, accessToken
 	req.Header.Set("X-Conversation-ID", workBuddyConversationUUID(conversationID))
 	req.Header.Set("X-Conversation-Request-ID", conversationRequestID)
 	req.Header.Set("X-Conversation-Message-ID", requestID)
+	req.Header.Set("X-Root-Request-ID", conversationRequestID)
 }
 
 func lookupWorkBuddyModelInfo(modelID string) *registry.ModelInfo {

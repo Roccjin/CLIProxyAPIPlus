@@ -497,6 +497,34 @@ func TestSelectorPick_AllCooldownReturnsModelCooldownError(t *testing.T) {
 	})
 }
 
+func TestGetAvailableAuths_TransientUnavailableWithRetryAfterIsCooldown(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	next := now.Add(60 * time.Second)
+	auth := &Auth{
+		ID:             "workbuddy-auth",
+		Unavailable:    true,
+		NextRetryAfter: next,
+		StatusMessage:  "transient upstream error",
+	}
+
+	_, err := getAvailableAuths([]*Auth{auth}, "workbuddy", "gpt-6-astra", now)
+	if err == nil {
+		t.Fatal("getAvailableAuths() error = nil, want model cooldown")
+	}
+	var mce *modelCooldownError
+	if !errors.As(err, &mce) {
+		t.Fatalf("getAvailableAuths() error = %T (%v), want *modelCooldownError for 5xx cooldown without quota", err, err)
+	}
+	if mce.StatusCode() != http.StatusTooManyRequests {
+		t.Fatalf("StatusCode() = %d, want %d", mce.StatusCode(), http.StatusTooManyRequests)
+	}
+	if got := mce.Headers().Get("Retry-After"); got == "" {
+		t.Fatal("Headers().Get(Retry-After) = empty, want a value")
+	}
+}
+
 func TestIsAuthBlockedForModel_UnavailableWithoutNextRetryIsBlocked(t *testing.T) {
 	t.Parallel()
 
