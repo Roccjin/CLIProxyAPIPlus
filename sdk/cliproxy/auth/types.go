@@ -107,6 +107,18 @@ const (
 	pluginVirtualAttrEnabled = "true"
 )
 
+const (
+	// MetadataKeyDisabledReason records the machine readable reason an auth was disabled.
+	MetadataKeyDisabledReason = "disabled_reason"
+	// MetadataKeyDisabledProviderCode records the upstream provider machine code
+	// that triggered an automatic disable.
+	MetadataKeyDisabledProviderCode = "disabled_provider_code"
+	// MetadataKeyDisabledAt records when an auth was automatically disabled.
+	MetadataKeyDisabledAt = "disabled_at"
+	// DisabledReasonCreditsExhausted marks disables caused by exhausted credential credits.
+	DisabledReasonCreditsExhausted = "credits_exhausted"
+)
+
 // MarkPluginVirtualAuth marks an auth that was expanded from a plugin-owned source file.
 func MarkPluginVirtualAuth(auth *Auth, sourcePath string, ordinal int) {
 	if auth == nil {

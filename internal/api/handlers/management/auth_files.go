@@ -219,6 +219,23 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 				emailValue := gjson.GetBytes(data, "email").String()
 				fileData["type"] = typeValue
 				fileData["email"] = emailValue
+				if dv := gjson.GetBytes(data, "disabled"); dv.Exists() {
+					switch dv.Type {
+					case gjson.True:
+						fileData["disabled"] = true
+					case gjson.False:
+						fileData["disabled"] = false
+					}
+				}
+				if disabledReason := strings.TrimSpace(gjson.GetBytes(data, coreauth.MetadataKeyDisabledReason).String()); disabledReason != "" {
+					fileData["disabled_reason"] = disabledReason
+				}
+				if disabledProviderCode := strings.TrimSpace(gjson.GetBytes(data, coreauth.MetadataKeyDisabledProviderCode).String()); disabledProviderCode != "" {
+					fileData["disabled_provider_code"] = disabledProviderCode
+				}
+				if disabledAt := strings.TrimSpace(gjson.GetBytes(data, coreauth.MetadataKeyDisabledAt).String()); disabledAt != "" {
+					fileData["disabled_at"] = disabledAt
+				}
 				if projectID := strings.TrimSpace(gjson.GetBytes(data, "project_id").String()); projectID != "" {
 					fileData["project_id"] = projectID
 				}
@@ -314,6 +331,23 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth) gin.H {
 		"runtime_only":   runtimeOnly,
 		"source":         "memory",
 		"size":           int64(0),
+	}
+	if auth.Metadata != nil {
+		if reason, ok := auth.Metadata[coreauth.MetadataKeyDisabledReason].(string); ok {
+			if trimmed := strings.TrimSpace(reason); trimmed != "" {
+				entry["disabled_reason"] = trimmed
+			}
+		}
+		if providerCode, ok := auth.Metadata[coreauth.MetadataKeyDisabledProviderCode].(string); ok {
+			if trimmed := strings.TrimSpace(providerCode); trimmed != "" {
+				entry["disabled_provider_code"] = trimmed
+			}
+		}
+		if disabledAt, ok := auth.Metadata[coreauth.MetadataKeyDisabledAt].(string); ok {
+			if trimmed := strings.TrimSpace(disabledAt); trimmed != "" {
+				entry["disabled_at"] = trimmed
+			}
+		}
 	}
 	entry["success"] = auth.Success
 	entry["failed"] = auth.Failed

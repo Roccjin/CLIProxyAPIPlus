@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 )
 
 // SetRetryConfig updates retry attempts, credential retry limit and cooldown wait interval.
@@ -77,6 +78,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	}
 	now := time.Now()
 	cooldownStateChanged := normalizeModelStates(auth)
+	normalizePersistedDisabledState(auth, now)
 	if m.cooldownDisabledForAuth(auth) || auth.Disabled || auth.Status == StatusDisabled {
 		cooldownStateChanged = clearCooldownStateForAuth(auth, now) || cooldownStateChanged
 	}
@@ -91,7 +93,11 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	if m.scheduler != nil {
 		m.scheduler.upsertAuth(authClone)
 	}
-	m.queueRefreshReschedule(auth.ID)
+	if authDisabledFromState(authClone) {
+		m.queueRefreshUnschedule(auth.ID)
+	} else {
+		m.queueRefreshReschedule(auth.ID)
+	}
 	_ = m.persist(ctx, auth)
 	m.hook.OnAuthRegistered(ctx, auth.Clone())
 	if cooldownStateChanged {
@@ -136,6 +142,14 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	}
 	now := time.Now()
 	cooldownStateChanged := normalizeModelStates(auth)
+	wasDisabled := authDisabledFromState(existing)
+	reenabled := false
+	if wasDisabled && !authDisabledFromState(auth) {
+		clearDisabledStateForEnable(auth, now)
+		reenabled = true
+	} else {
+		normalizePersistedDisabledState(auth, now)
+	}
 	if m.cooldownDisabledForAuth(auth) || auth.Disabled || auth.Status == StatusDisabled {
 		cooldownStateChanged = clearCooldownStateForAuth(auth, now) || cooldownStateChanged
 	}
@@ -149,7 +163,17 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	if m.scheduler != nil {
 		m.scheduler.upsertAuth(authClone)
 	}
-	m.queueRefreshReschedule(auth.ID)
+	if authDisabledFromState(authClone) {
+		m.queueRefreshUnschedule(auth.ID)
+	} else {
+		m.queueRefreshReschedule(auth.ID)
+	}
+	if reenabled {
+		for _, model := range modelsForRegisteredAuth(auth.ID) {
+			registry.GetGlobalRegistry().ClearModelQuotaExceeded(auth.ID, model)
+			registry.GetGlobalRegistry().ResumeClientModel(auth.ID, model)
+		}
+	}
 	_ = m.persist(ctx, auth)
 	m.hook.OnAuthUpdated(ctx, auth.Clone())
 	if cooldownStateChanged {
@@ -233,10 +257,13 @@ func (m *Manager) Load(ctx context.Context) error {
 		return err
 	}
 	m.auths = make(map[string]*Auth, len(items))
+	now := time.Now()
 	for _, auth := range items {
 		if auth == nil || auth.ID == "" {
 			continue
 		}
+		normalizeModelStates(auth)
+		normalizePersistedDisabledState(auth, now)
 		if errWeight := ValidateAuthWeight(auth); errWeight != nil {
 			continue
 		}
@@ -251,6 +278,98 @@ func (m *Manager) Load(ctx context.Context) error {
 	m.mu.Unlock()
 	m.syncScheduler()
 	return nil
+}
+
+// authDisabledFromState reports whether the auth is disabled either through
+// runtime flags or persisted metadata.
+func authDisabledFromState(auth *Auth) bool {
+	if auth == nil {
+		return false
+	}
+	if auth.IsDisabled() {
+		return true
+	}
+	if auth.Metadata == nil {
+		return false
+	}
+	if raw, ok := auth.Metadata["disabled"]; ok {
+		if disabled, okParse := parseBoolAny(raw); okParse && disabled {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizePersistedDisabledState restores persisted disabled metadata into
+// runtime state so every storage backend converges on the same behavior. It
+// clears transient/quota/error state, enforces Disabled+StatusDisabled, and
+// only restores a status message for known machine readable reasons; unknown
+// reasons keep the existing (manual) message and are never trusted as public text.
+func normalizePersistedDisabledState(auth *Auth, now time.Time) {
+	if auth == nil || !authDisabledFromState(auth) {
+		return
+	}
+	for _, state := range auth.ModelStates {
+		resetModelState(state, now)
+	}
+	auth.Unavailable = false
+	auth.NextRetryAfter = time.Time{}
+	auth.Quota = QuotaState{}
+	auth.LastError = nil
+	auth.Disabled = true
+	auth.Status = StatusDisabled
+	if auth.Metadata != nil {
+		auth.Metadata["disabled"] = true
+	}
+	reason := ""
+	if auth.Metadata != nil {
+		if raw, ok := auth.Metadata[MetadataKeyDisabledReason].(string); ok {
+			reason = strings.TrimSpace(raw)
+		}
+	}
+	if reason == DisabledReasonCreditsExhausted {
+		auth.StatusMessage = creditsExhaustedStatusMessage(auth.Provider)
+	}
+	auth.UpdatedAt = now
+}
+
+// clearDisabledStateForEnable clears the disabled flag plus all residual
+// cooldown/quota/error state and removes persisted auto-disable metadata when
+// an auth is re-enabled.
+func clearDisabledStateForEnable(auth *Auth, now time.Time) {
+	if auth == nil {
+		return
+	}
+	auth.Disabled = false
+	auth.Status = StatusActive
+	auth.StatusMessage = ""
+	auth.Unavailable = false
+	auth.NextRetryAfter = time.Time{}
+	auth.Quota = QuotaState{}
+	auth.LastError = nil
+	for _, state := range auth.ModelStates {
+		resetModelState(state, now)
+	}
+	if auth.Metadata != nil {
+		auth.Metadata["disabled"] = false
+		delete(auth.Metadata, MetadataKeyDisabledReason)
+		delete(auth.Metadata, MetadataKeyDisabledProviderCode)
+		delete(auth.Metadata, MetadataKeyDisabledAt)
+	}
+	auth.UpdatedAt = now
+}
+
+// creditsExhaustedStatusMessage returns the stable, safe status message for a
+// credential disabled because its credits are exhausted.
+func creditsExhaustedStatusMessage(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "workbuddy":
+		return "WorkBuddy credits exhausted"
+	case "codebuddy":
+		return "CodeBuddy credits exhausted"
+	default:
+		return "Credential credits exhausted"
+	}
 }
 
 func (m *Manager) persist(ctx context.Context, auth *Auth) error {

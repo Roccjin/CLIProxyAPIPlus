@@ -712,6 +712,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	suspendReason := ""
 	clearModelQuota := false
 	setModelQuota := false
+	terminalDisabled := false
 	var authSnapshot *Auth
 	cooldownStateChanged := false
 
@@ -749,7 +750,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				clearAuthStateOnSuccess(auth, now)
 			}
 		} else {
-			if modelKey != "" {
+			if isTerminalCredentialResultError(result.Error) {
+				// Terminal credential errors bypass cooldown entirely; a rejected
+				// apply means the auth was already disabled by the operator.
+				terminalDisabled = applyCreditsExhaustedDisable(auth, result.Error, now)
+			} else if modelKey != "" {
 				if !shouldSkipCredentialCooldown(result.Error) {
 					disableCooling := m.cooldownDisabledForAuth(auth)
 					if result.Error != nil && result.Error.Code == ErrorCodeForceCooldown {
@@ -941,7 +946,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 
-		_ = m.persist(ctx, auth)
+		if errPersist := m.persist(ctx, auth); errPersist != nil {
+			logEntryWithRequestID(ctx).WithField("auth_id", auth.ID).Warnf("failed to persist auth result: %v", errPersist)
+		}
 		authSnapshot = auth.Clone()
 		if trackCooldownState {
 			cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
@@ -954,6 +961,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	}
 	if authSnapshot != nil && cooldownStateChanged {
 		m.persistCooldownStates(context.Background())
+	}
+	if terminalDisabled {
+		m.queueRefreshUnschedule(result.AuthID)
+		m.invalidateSessionAffinity(result.AuthID)
 	}
 
 	if clearModelQuota && modelKey != "" {
@@ -1299,6 +1310,72 @@ func clearAuthStateOnSuccess(auth *Auth, now time.Time) {
 	auth.LastError = nil
 	auth.NextRetryAfter = time.Time{}
 	auth.UpdatedAt = now
+}
+
+// isTerminalCredentialResultError reports whether a result error must disable
+// the credential permanently instead of scheduling a cooldown. Only trusted
+// provider adapters may produce the internal stable code.
+func isTerminalCredentialResultError(err *Error) bool {
+	return err != nil && err.Code == ErrorCodeCredentialCreditsExhausted
+}
+
+// applyCreditsExhaustedDisable transitions the auth into a persisted terminal
+// disabled state. It returns false when the auth was already disabled by the
+// operator for a different (or no) reason, preserving the manual intent.
+func applyCreditsExhaustedDisable(auth *Auth, resultErr *Error, now time.Time) bool {
+	if auth == nil || resultErr == nil {
+		return false
+	}
+	existingReason := ""
+	if auth.Metadata != nil {
+		if raw, ok := auth.Metadata[MetadataKeyDisabledReason].(string); ok {
+			existingReason = strings.TrimSpace(raw)
+		}
+	}
+	if authDisabledFromState(auth) && existingReason != DisabledReasonCreditsExhausted {
+		return false
+	}
+	for _, state := range auth.ModelStates {
+		resetModelState(state, now)
+	}
+	auth.Unavailable = false
+	auth.NextRetryAfter = time.Time{}
+	auth.Quota = QuotaState{}
+	auth.Disabled = true
+	auth.Status = StatusDisabled
+	auth.StatusMessage = strings.TrimSpace(resultErr.Message)
+	if auth.StatusMessage == "" {
+		auth.StatusMessage = creditsExhaustedStatusMessage(auth.Provider)
+	}
+	auth.LastError = cloneError(resultErr)
+	auth.UpdatedAt = now
+
+	if auth.Metadata == nil {
+		auth.Metadata = make(map[string]any)
+	}
+	auth.Metadata["disabled"] = true
+	auth.Metadata[MetadataKeyDisabledReason] = DisabledReasonCreditsExhausted
+	if providerCode := creditsExhaustedProviderCode(auth.Provider); providerCode != "" {
+		auth.Metadata[MetadataKeyDisabledProviderCode] = providerCode
+	} else {
+		delete(auth.Metadata, MetadataKeyDisabledProviderCode)
+	}
+	if raw, ok := auth.Metadata[MetadataKeyDisabledAt].(string); !ok || strings.TrimSpace(raw) == "" {
+		auth.Metadata[MetadataKeyDisabledAt] = now.UTC().Format(time.RFC3339Nano)
+	}
+	return true
+}
+
+// creditsExhaustedProviderCode returns the upstream machine code persisted for
+// Buddy-family credits exhaustion. Other providers never persist a provider
+// code they did not confirm.
+func creditsExhaustedProviderCode(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "workbuddy", "codebuddy":
+		return "14018"
+	default:
+		return ""
+	}
 }
 
 func cloneError(err *Error) *Error {

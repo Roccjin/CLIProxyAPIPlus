@@ -32,6 +32,15 @@ type WorkBuddyTokenStorage struct {
 	UserID string `json:"user_id"`
 	// Type indicates the authentication provider type, always "workbuddy" for this storage.
 	Type string `json:"type"`
+
+	// Metadata holds arbitrary key-value pairs injected via hooks.
+	// It is not exported to JSON directly to allow flattening during serialization.
+	Metadata map[string]any `json:"-"`
+}
+
+// SetMetadata allows external callers to inject metadata into the storage before saving.
+func (s *WorkBuddyTokenStorage) SetMetadata(meta map[string]any) {
+	s.Metadata = meta
 }
 
 // SaveTokenToFile serializes the WorkBuddy token storage to a JSON file.
@@ -50,7 +59,7 @@ func (s *WorkBuddyTokenStorage) SaveTokenToFile(authFilePath string) error {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	data, errMerge := misc.MergeAndPreserveAuthFile(s, nil, authFilePath)
+	data, errMerge := misc.MergeAndPreserveAuthFile(s, s.Metadata, authFilePath)
 	if errMerge != nil {
 		return fmt.Errorf("failed to merge metadata: %w", errMerge)
 	}

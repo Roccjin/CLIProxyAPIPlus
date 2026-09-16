@@ -406,12 +406,19 @@ func (e *WorkBuddyExecutor) doWorkBuddyChat(ctx context.Context, auth *cliproxya
 		}
 		appendAPIResponseChunk(ctx, e.cfg, errBody)
 		summary := summarizeErrorBody(httpResp.Header.Get("Content-Type"), errBody)
+		failure := helps.ClassifyBuddyFailure(httpResp.StatusCode, errBody)
 		lastErr = statusErr{code: httpResp.StatusCode, msg: string(errBody)}
+		if normalizedErr := helps.NewBuddyFailureError(e.Identifier(), failure); normalizedErr != nil {
+			lastErr = normalizedErr
+		}
 		if isWorkBuddyAccountRiskControl(httpResp.StatusCode, errBody) {
 			log.Warnf("workbuddy executor: account risk control status: %d, body: %s", httpResp.StatusCode, summary)
 			return nil, lastErr
 		}
-		if attempt < workBuddyTransientProviderRetries && isWorkBuddyTransientProviderError(httpResp.StatusCode, errBody) {
+		retryable := failure.Kind == helps.BuddyFailureGatewayTimeout ||
+			failure.Kind == helps.BuddyFailureTransient ||
+			isWorkBuddyTransientProviderError(httpResp.StatusCode, errBody)
+		if attempt < workBuddyTransientProviderRetries && retryable {
 			delay := workBuddyTransientRetryBackoff(attempt)
 			log.Warnf("workbuddy executor: transient upstream error status: %d, body: %s; retrying in %s", httpResp.StatusCode, summary, delay)
 			if errWait := workBuddyRetryWait(ctx, delay); errWait != nil {
@@ -479,21 +486,7 @@ func isWorkBuddyAccountRiskControl(status int, body []byte) bool {
 }
 
 func isWorkBuddyTransientProviderError(status int, body []byte) bool {
-	if status != http.StatusInternalServerError && status != http.StatusBadGateway && status != http.StatusServiceUnavailable {
-		return false
-	}
-	code := gjson.GetBytes(body, "code")
-	if code.Int() == 11134 || code.String() == "11134" {
-		return true
-	}
-	msg := strings.ToLower(strings.Join([]string{
-		code.String(),
-		gjson.GetBytes(body, "msg").String(),
-		gjson.GetBytes(body, "message").String(),
-		gjson.GetBytes(body, "extError.code").String(),
-		gjson.GetBytes(body, "extError.message").String(),
-	}, " "))
-	return strings.Contains(msg, "temporarily unavailable") || strings.Contains(msg, "service_unavailable")
+	return helps.ClassifyBuddyFailure(status, body).Kind == helps.BuddyFailureTransient
 }
 
 func isWorkBuddyTransientNetworkError(err error) bool {

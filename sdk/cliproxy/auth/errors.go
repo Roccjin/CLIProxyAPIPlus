@@ -15,6 +15,14 @@ const connectionLifecycleErrorCode = ErrorCodeConnectionLifecycle
 // ErrorCodeForceCooldown marks failures that must enforce credential cooldown.
 const ErrorCodeForceCooldown = "force_cooldown"
 
+// ErrorCodeUpstreamGatewayTimeout marks upstream gateway timeouts that follow
+// the transient cooldown path without disabling the credential.
+const ErrorCodeUpstreamGatewayTimeout = "upstream_gateway_timeout"
+
+// ErrorCodeCredentialCreditsExhausted marks provider-confirmed credential
+// credit exhaustion that should trigger a terminal credential disable.
+const ErrorCodeCredentialCreditsExhausted = "credential_credits_exhausted"
+
 // Error describes an authentication related failure in a provider agnostic format.
 type Error struct {
 	// Code is a short machine readable identifier.
@@ -50,6 +58,12 @@ func (e *Error) StatusCode() int {
 // rather than the selected credential.
 func (e *Error) IsRequestScoped() bool {
 	return e != nil && e.Code == ErrorCodeRequestScoped
+}
+
+// IsCredentialScoped reports whether the failure is scoped to the credential,
+// so other model aliases under the same credential should stop being tried.
+func (e *Error) IsCredentialScoped() bool {
+	return e != nil && e.Code == ErrorCodeCredentialCreditsExhausted
 }
 
 // MarkRequestScoped marks the error as request-scoped in place and returns it.

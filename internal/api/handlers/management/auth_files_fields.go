@@ -202,6 +202,11 @@ func applyAuthDisabledState(auth *coreauth.Auth, disabled bool) {
 		auth.Metadata = make(map[string]any)
 	}
 	auth.Metadata["disabled"] = disabled
+	if !disabled {
+		delete(auth.Metadata, coreauth.MetadataKeyDisabledReason)
+		delete(auth.Metadata, coreauth.MetadataKeyDisabledProviderCode)
+		delete(auth.Metadata, coreauth.MetadataKeyDisabledAt)
+	}
 }
 
 // PatchAuthFileFields updates arbitrary metadata fields of an auth file.

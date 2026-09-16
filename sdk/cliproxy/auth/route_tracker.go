@@ -94,6 +94,10 @@ func sanitizeProviderClass(p string) string {
 		return "aistudio"
 	case "vertex", "vertexai", "vertex_ai":
 		return "vertex"
+	case "workbuddy":
+		return "workbuddy"
+	case "codebuddy":
+		return "codebuddy"
 	default:
 		return "other"
 	}

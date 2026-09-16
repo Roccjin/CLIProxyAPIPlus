@@ -780,3 +780,32 @@ func TestRouteExhaustion_PreservesStructuredJSONRequestFault(t *testing.T) {
 		t.Fatalf("wrapped.Error() = %q, want original %q", wrapped.Error(), rawJSON)
 	}
 }
+
+func TestRouteAttemptTrackerSummary_BuddyProviderClasses(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		provider string
+		status   int
+		want     string
+	}{
+		{name: "workbuddy gateway timeout", provider: "workbuddy", status: 504, want: "attempted routes: [workbuddy:504]"},
+		{name: "workbuddy credits exhausted", provider: "workbuddy", status: 429, want: "attempted routes: [workbuddy:429]"},
+		{name: "codebuddy gateway timeout", provider: "codebuddy", status: 504, want: "attempted routes: [codebuddy:504]"},
+		{name: "codebuddy credits exhausted", provider: "codebuddy", status: 429, want: "attempted routes: [codebuddy:429]"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tracker := newRouteAttemptTracker()
+			tracker.Record(&Auth{Provider: tc.provider}, &Error{HTTPStatus: tc.status})
+			if got := tracker.Summary(); got != tc.want {
+				t.Fatalf("Summary() = %q, want %q", got, tc.want)
+			}
+			if strings.Contains(tracker.Summary(), "other:") {
+				t.Fatalf("Summary() misclassified provider %q as other: %s", tc.provider, tracker.Summary())
+			}
+		})
+	}
+}
