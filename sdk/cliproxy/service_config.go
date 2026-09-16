@@ -189,6 +189,10 @@ func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, s
 		return false
 	}
 	s.syncPluginModelRuntime(registrationCtx)
+	if errContext := ctx.Err(); errContext != nil {
+		return false
+	}
+	s.syncBuddyCreditsPatrol()
 	return ctx.Err() == nil
 }
 

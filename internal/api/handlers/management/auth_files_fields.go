@@ -206,6 +206,9 @@ func applyAuthDisabledState(auth *coreauth.Auth, disabled bool) {
 		delete(auth.Metadata, coreauth.MetadataKeyDisabledReason)
 		delete(auth.Metadata, coreauth.MetadataKeyDisabledProviderCode)
 		delete(auth.Metadata, coreauth.MetadataKeyDisabledAt)
+		delete(auth.Metadata, coreauth.MetadataKeyCreditsPatrolAt)
+		delete(auth.Metadata, coreauth.MetadataKeyCreditsPatrolResult)
+		delete(auth.Metadata, coreauth.MetadataKeyCreditsPatrolRemain)
 	}
 }
 

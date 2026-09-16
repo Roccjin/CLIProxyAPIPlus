@@ -117,6 +117,18 @@ const (
 	MetadataKeyDisabledAt = "disabled_at"
 	// DisabledReasonCreditsExhausted marks disables caused by exhausted credential credits.
 	DisabledReasonCreditsExhausted = "credits_exhausted"
+	// MetadataKeyCreditsPatrolAt records when credits patrol last inspected an auth.
+	MetadataKeyCreditsPatrolAt = "credits_patrol_at"
+	// MetadataKeyCreditsPatrolResult records the last credits-patrol outcome.
+	MetadataKeyCreditsPatrolResult = "credits_patrol_result"
+	// MetadataKeyCreditsPatrolRemain records remaining credits observed by patrol.
+	MetadataKeyCreditsPatrolRemain = "credits_patrol_remain"
+)
+
+const (
+	CreditsPatrolResultReenabled   = "reenabled"
+	CreditsPatrolResultStillEmpty  = "still_empty"
+	CreditsPatrolResultAuthInvalid = "auth_invalid"
 )
 
 // MarkPluginVirtualAuth marks an auth that was expanded from a plugin-owned source file.

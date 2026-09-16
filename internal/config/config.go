@@ -76,6 +76,10 @@ type Config struct {
 	// When <= 0, the default worker count is used.
 	AuthAutoRefreshWorkers int `yaml:"auth-auto-refresh-workers" json:"auth-auto-refresh-workers"`
 
+	// BuddyCreditsPatrol re-enables WorkBuddy/CodeBuddy credentials after
+	// credits_exhausted when billing reports remaining credits. Default on.
+	BuddyCreditsPatrol BuddyCreditsPatrolConfig `yaml:"buddy-credits-patrol" json:"buddy-credits-patrol"`
+
 	// RequestRetry defines the retry times when the request failed.
 	RequestRetry int `yaml:"request-retry" json:"request-retry"`
 	// MaxRetryCredentials defines the maximum number of credentials to try for a failed request.

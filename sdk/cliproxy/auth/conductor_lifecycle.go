@@ -355,6 +355,9 @@ func clearDisabledStateForEnable(auth *Auth, now time.Time) {
 		delete(auth.Metadata, MetadataKeyDisabledReason)
 		delete(auth.Metadata, MetadataKeyDisabledProviderCode)
 		delete(auth.Metadata, MetadataKeyDisabledAt)
+		delete(auth.Metadata, MetadataKeyCreditsPatrolAt)
+		delete(auth.Metadata, MetadataKeyCreditsPatrolResult)
+		delete(auth.Metadata, MetadataKeyCreditsPatrolRemain)
 	}
 	auth.UpdatedAt = now
 }

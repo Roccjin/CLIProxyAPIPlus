@@ -200,6 +200,19 @@ video-result-auth-cache-ttl: "3h"
 # When > 0, overrides the default worker count (16).
 # auth-auto-refresh-workers: 16
 
+# Re-enable WorkBuddy/CodeBuddy credentials after monthly credits return.
+# Only inspects auths auto-disabled with disabled_reason=credits_exhausted.
+# Uses the billing meter API (never chat). Serial, one account at a time.
+# Default: enabled, 12h rounds. Set enabled: false to disable.
+buddy-credits-patrol:
+  enabled: true
+  interval: 12h
+  startup-jitter: 10m
+  min-account-interval: 45s
+  account-jitter: 30s
+  min-remain: 1
+  request-timeout: 45s
+
 # Quota exceeded behavior
 quota-exceeded:
   switch-project: true # Whether to automatically switch to another project when a quota is exceeded
