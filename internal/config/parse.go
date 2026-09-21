@@ -38,6 +38,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	cfg.CredentialInFlight = DefaultCredentialInFlightConfig()
 	cfg.BuddyCreditsPatrol = DefaultBuddyCreditsPatrolConfig()
+	cfg.BuddyActivityPatrol = DefaultBuddyActivityPatrolConfig()
 
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config payload: %w", err)
@@ -90,6 +91,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	}
 
 	cfg.BuddyCreditsPatrol.Normalize()
+	cfg.BuddyActivityPatrol.Normalize()
 
 	cfg.NormalizePluginsConfig()
 	if errResolvePluginsDir := cfg.ResolvePluginsDir(); errResolvePluginsDir != nil && cfg.Plugins.Enabled {

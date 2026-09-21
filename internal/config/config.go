@@ -80,6 +80,11 @@ type Config struct {
 	// credits_exhausted when billing reports remaining credits. Default on.
 	BuddyCreditsPatrol BuddyCreditsPatrolConfig `yaml:"buddy-credits-patrol" json:"buddy-credits-patrol"`
 
+	// BuddyActivityPatrol sends one official-CLI-shaped chat plus /v2/report
+	// events per international CodeBuddy credential each day so the next-day
+	// activity gift pack can settle. Default on.
+	BuddyActivityPatrol BuddyActivityPatrolConfig `yaml:"buddy-activity-patrol" json:"buddy-activity-patrol"`
+
 	// RequestRetry defines the retry times when the request failed.
 	RequestRetry int `yaml:"request-retry" json:"request-retry"`
 	// MaxRetryCredentials defines the maximum number of credentials to try for a failed request.

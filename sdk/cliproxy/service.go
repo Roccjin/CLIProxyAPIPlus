@@ -95,6 +95,9 @@ type Service struct {
 	creditsPatrolMu     sync.Mutex
 	creditsPatrolCancel context.CancelFunc
 
+	activityPatrolMu     sync.Mutex
+	activityPatrolCancel context.CancelFunc
+
 	// pluginHost owns dynamic plugin lifecycle and runtime capability adapters.
 	pluginHost *pluginhost.Host
 

@@ -32,6 +32,7 @@ type OpenAICompatibilityAPIKey = internalconfig.OpenAICompatibilityAPIKey
 type OpenAICompatibilityModel = internalconfig.OpenAICompatibilityModel
 type KiroRateLimitConfig = internalconfig.KiroRateLimitConfig
 type BuddyCreditsPatrolConfig = internalconfig.BuddyCreditsPatrolConfig
+type BuddyActivityPatrolConfig = internalconfig.BuddyActivityPatrolConfig
 
 type TLS = internalconfig.TLSConfig
 

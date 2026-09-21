@@ -193,6 +193,7 @@ func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, s
 		return false
 	}
 	s.syncBuddyCreditsPatrol()
+	s.syncBuddyActivityPatrol()
 	return ctx.Err() == nil
 }
 

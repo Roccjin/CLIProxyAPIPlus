@@ -213,6 +213,19 @@ buddy-credits-patrol:
   min-remain: 1
   request-timeout: 45s
 
+# Send one official-CLI-shaped chat plus /v2/report events per international
+# CodeBuddy credential so the next-day 30-credit activity gift pack can settle.
+# Skips WorkBuddy, CN CodeBuddy, disabled, and plugin-virtual auths.
+# Default: enabled, 24h rounds, model hy3. Set enabled: false to disable.
+buddy-activity-patrol:
+  enabled: true
+  interval: 24h
+  startup-jitter: 10m
+  min-account-interval: 45s
+  account-jitter: 30s
+  request-timeout: 90s
+  model: hy3
+
 # Quota exceeded behavior
 quota-exceeded:
   switch-project: true # Whether to automatically switch to another project when a quota is exceeded

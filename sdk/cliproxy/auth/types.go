@@ -123,6 +123,19 @@ const (
 	MetadataKeyCreditsPatrolResult = "credits_patrol_result"
 	// MetadataKeyCreditsPatrolRemain records remaining credits observed by patrol.
 	MetadataKeyCreditsPatrolRemain = "credits_patrol_remain"
+	// MetadataKeyActivityPatrolAt records when activity patrol last pinged an auth.
+	MetadataKeyActivityPatrolAt = "activity_patrol_at"
+	// MetadataKeyActivityPatrolResult records the last activity-patrol outcome.
+	MetadataKeyActivityPatrolResult = "activity_patrol_result"
+	// MetadataKeyCLIMachineID is a stable per-credential CodeBuddy CLI machine id.
+	MetadataKeyCLIMachineID = "cli_machine_id"
+)
+
+const (
+	ActivityPatrolResultOK           = "ok"
+	ActivityPatrolResultAuthInvalid  = "auth_invalid"
+	ActivityPatrolResultCreditsEmpty = "credits_exhausted"
+	ActivityPatrolResultFailed       = "failed"
 )
 
 const (

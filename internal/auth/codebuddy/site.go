@@ -25,8 +25,15 @@ const (
 	DefaultDomain       = "www.codebuddy.cn"
 	DefaultDomainGlobal = "www.codebuddy.ai"
 
-	ClientVersion = "2.148.0"
+	ClientVersion = "2.156.0"
 	UserAgent     = "CLI/" + ClientVersion + " CodeBuddy/" + ClientVersion
+
+	// CLIExtName is the official CodeBuddy CLI package name used in /v2/report.
+	CLIExtName = "@tencent-ai/codebuddy-code"
+	// CLICommit and CLIReleaseDateMS are the 2.156.0 CLI build fingerprint
+	// captured from the official client /v2/report payload.
+	CLICommit        = "fee4a881785f81589716563417322d748c3901c6"
+	CLIReleaseDateMS = int64(1789923107760)
 
 	SiteNameCN     = "cn"
 	SiteNameGlobal = "global"

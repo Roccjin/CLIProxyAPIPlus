@@ -74,6 +74,18 @@ func TestCodeBuddyApplyHeaders_InternationalShape(t *testing.T) {
 	if req.Header.Get("X-Request-ID") == "" || req.Header.Get("X-Conversation-ID") == "" {
 		t.Fatal("expected conversation request ids")
 	}
+	if req.Header.Get("X-Request-ID") != req.Header.Get("X-Conversation-Message-ID") {
+		t.Fatalf("X-Request-ID should match message id, got %s / %s", req.Header.Get("X-Request-ID"), req.Header.Get("X-Conversation-Message-ID"))
+	}
+	if req.Header.Get("X-Root-Request-ID") == "" {
+		t.Fatal("expected X-Root-Request-ID")
+	}
+	if req.Header.Get("X-Root-Request-ID") != req.Header.Get("X-Conversation-Request-ID") {
+		t.Fatalf("root id should match conversation request id")
+	}
+	if req.Header.Get("User-Agent") != "CLI/2.156.0 CodeBuddy/2.156.0" {
+		t.Fatalf("User-Agent = %s", req.Header.Get("User-Agent"))
+	}
 }
 
 func TestParseCodeBuddyV3CLIModels(t *testing.T) {
@@ -400,4 +412,3 @@ func TestNormalizeCodeBuddyChatStreamLine_ResponsesTranslatorAcceptsNormalizedCh
 		t.Fatalf("missing response.created in %s", joined)
 	}
 }
-

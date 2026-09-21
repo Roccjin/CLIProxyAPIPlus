@@ -605,12 +605,41 @@ func rewriteCodeBuddyRequestURL(req *http.Request, domain string) {
 	req.Host = base.Host
 }
 
+type codeBuddyChatIDs struct {
+	ConversationID        string
+	ConversationRequestID string
+	MessageID             string
+	TraceID               string
+}
+
+func newCodeBuddyChatIDs() codeBuddyChatIDs {
+	return codeBuddyChatIDs{
+		ConversationID:        uuid.NewString(),
+		ConversationRequestID: strings.ReplaceAll(uuid.NewString(), "-", ""),
+		MessageID:             strings.ReplaceAll(uuid.NewString(), "-", ""),
+		TraceID:               strings.ReplaceAll(uuid.NewString(), "-", ""),
+	}
+}
+
 // applyHeaders sets required headers for CodeBuddy API requests.
 func (e *CodeBuddyExecutor) applyHeaders(req *http.Request, accessToken, userID, domain string) {
-	e.applyCodeBuddyHeaders(req, accessToken, userID, domain, helps.BuddyHeaderConversationID(req.Header))
+	conversationID := ""
+	if req != nil {
+		conversationID = helps.BuddyHeaderConversationID(req.Header)
+	}
+	e.applyCodeBuddyHeaders(req, accessToken, userID, domain, conversationID)
 }
 
 func (e *CodeBuddyExecutor) applyCodeBuddyHeaders(req *http.Request, accessToken, userID, domain, conversationID string) {
+	ids := newCodeBuddyChatIDs()
+	ids.ConversationID = conversationID
+	e.applyHeadersWithIDs(req, accessToken, userID, domain, ids)
+}
+
+func (e *CodeBuddyExecutor) applyHeadersWithIDs(req *http.Request, accessToken, userID, domain string, ids codeBuddyChatIDs) {
+	if req == nil {
+		return
+	}
 	if req.Header == nil {
 		req.Header = make(http.Header)
 	}
@@ -620,8 +649,21 @@ func (e *CodeBuddyExecutor) applyCodeBuddyHeaders(req *http.Request, accessToken
 			delete(req.Header, key)
 		}
 	}
-	requestID := strings.ReplaceAll(uuid.NewString(), "-", "")
-	messageID := strings.ReplaceAll(uuid.NewString(), "-", "")
+	if ids.ConversationRequestID == "" || ids.MessageID == "" {
+		fresh := newCodeBuddyChatIDs()
+		if ids.ConversationRequestID == "" {
+			ids.ConversationRequestID = fresh.ConversationRequestID
+		}
+		if ids.MessageID == "" {
+			ids.MessageID = fresh.MessageID
+		}
+		if ids.TraceID == "" {
+			ids.TraceID = fresh.TraceID
+		}
+		if ids.ConversationID == "" {
+			ids.ConversationID = fresh.ConversationID
+		}
+	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -638,10 +680,14 @@ func (e *CodeBuddyExecutor) applyCodeBuddyHeaders(req *http.Request, accessToken
 	req.Header.Set("X-Private-Data", "false")
 	req.Header.Set("x-codebuddy-request", "1")
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
-	req.Header.Set("X-Request-ID", requestID)
-	req.Header.Set("X-Conversation-ID", helps.BuddyConversationUUID(codeBuddyConversationNamespace, conversationID))
-	req.Header.Set("X-Conversation-Request-ID", requestID)
-	req.Header.Set("X-Conversation-Message-ID", messageID)
+	req.Header.Set("X-Request-ID", ids.MessageID)
+	req.Header.Set("X-Conversation-ID", helps.BuddyConversationUUID(codeBuddyConversationNamespace, ids.ConversationID))
+	req.Header.Set("X-Conversation-Request-ID", ids.ConversationRequestID)
+	req.Header.Set("X-Conversation-Message-ID", ids.MessageID)
+	req.Header.Set("X-Root-Request-ID", ids.ConversationRequestID)
+	if ids.TraceID != "" {
+		req.Header.Set("X-Trace-ID", ids.TraceID)
+	}
 }
 
 type openAIChatStreamChoiceAccumulator struct {

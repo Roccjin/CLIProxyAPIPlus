@@ -212,6 +212,7 @@ func (s *Service) Run(ctx context.Context) error {
 		s.coreManager.StartAutoRefresh(context.Background(), interval)
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
 		s.syncBuddyCreditsPatrol()
+		s.syncBuddyActivityPatrol()
 	}
 
 	select {
@@ -314,6 +315,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			s.coreManager.StopAutoRefresh()
 		}
 		s.stopBuddyCreditsPatrol()
+		s.stopBuddyActivityPatrol()
 		if s.watcher != nil {
 			if err := s.watcher.Stop(); err != nil {
 				log.Errorf("failed to stop file watcher: %v", err)
