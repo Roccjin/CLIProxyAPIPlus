@@ -193,10 +193,16 @@ func assertCodeBuddyConversationHeaders(t *testing.T, headers []http.Header, sti
 		if i > 0 && (conversationID == headers[0].Get("X-Conversation-ID")) != sticky {
 			t.Fatalf("sticky=%v: conversation IDs %q and %q", sticky, headers[0].Get("X-Conversation-ID"), conversationID)
 		}
-		if header.Get("X-Conversation-Request-ID") != header.Get("X-Request-ID") {
-			t.Fatal("CodeBuddy conversation request ID must still equal request ID")
+		if header.Get("X-Request-ID") != header.Get("X-Conversation-Message-ID") {
+			t.Fatal("CodeBuddy request ID must match conversation message ID")
 		}
-		for _, name := range []string{"X-Request-ID", "X-Conversation-Message-ID"} {
+		if header.Get("X-Conversation-Request-ID") != header.Get("X-Root-Request-ID") {
+			t.Fatal("CodeBuddy conversation request ID must match root request ID")
+		}
+		if header.Get("X-Request-ID") == "" || header.Get("X-Conversation-Request-ID") == header.Get("X-Request-ID") {
+			t.Fatal("CodeBuddy message ID and conversation request ID must differ")
+		}
+		for _, name := range []string{"X-Request-ID", "X-Conversation-Request-ID"} {
 			id := header.Get(name)
 			if _, err := uuid.Parse(id); err != nil || len(id) != 32 {
 				t.Fatalf("invalid %s: %q", name, id)
