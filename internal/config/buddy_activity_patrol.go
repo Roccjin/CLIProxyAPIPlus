@@ -3,6 +3,8 @@ package config
 import (
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -73,4 +75,68 @@ func (c *BuddyActivityPatrolConfig) Normalize() {
 	if strings.TrimSpace(c.Model) == "" {
 		c.Model = DefaultBuddyActivityPatrolModel
 	}
+}
+
+type buddyActivityPatrolYAML struct {
+	Enabled            *bool     `yaml:"enabled"`
+	Interval           yaml.Node `yaml:"interval"`
+	StartupJitter      yaml.Node `yaml:"startup-jitter"`
+	MinAccountInterval yaml.Node `yaml:"min-account-interval"`
+	AccountJitter      yaml.Node `yaml:"account-jitter"`
+	RequestTimeout     yaml.Node `yaml:"request-timeout"`
+	Model              *string   `yaml:"model"`
+}
+
+func (c *BuddyActivityPatrolConfig) UnmarshalYAML(value *yaml.Node) error {
+	if c == nil || value == nil {
+		return nil
+	}
+	var raw buddyActivityPatrolYAML
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	if raw.Enabled != nil {
+		c.Enabled = *raw.Enabled
+	}
+	if d, ok, err := parseYAMLDurationNode(&raw.Interval); err != nil {
+		return err
+	} else if ok {
+		c.Interval = d
+	}
+	if d, ok, err := parseYAMLDurationNode(&raw.StartupJitter); err != nil {
+		return err
+	} else if ok {
+		c.StartupJitter = d
+	}
+	if d, ok, err := parseYAMLDurationNode(&raw.MinAccountInterval); err != nil {
+		return err
+	} else if ok {
+		c.MinAccountInterval = d
+	}
+	if d, ok, err := parseYAMLDurationNode(&raw.AccountJitter); err != nil {
+		return err
+	} else if ok {
+		c.AccountJitter = d
+	}
+	if d, ok, err := parseYAMLDurationNode(&raw.RequestTimeout); err != nil {
+		return err
+	} else if ok {
+		c.RequestTimeout = d
+	}
+	if raw.Model != nil {
+		c.Model = strings.TrimSpace(*raw.Model)
+	}
+	return nil
+}
+
+func (c BuddyActivityPatrolConfig) MarshalYAML() (interface{}, error) {
+	return map[string]interface{}{
+		"enabled":              c.Enabled,
+		"interval":             formatYAMLDuration(c.Interval),
+		"startup-jitter":       formatYAMLDuration(c.StartupJitter),
+		"min-account-interval": formatYAMLDuration(c.MinAccountInterval),
+		"account-jitter":       formatYAMLDuration(c.AccountJitter),
+		"request-timeout":      formatYAMLDuration(c.RequestTimeout),
+		"model":                c.Model,
+	}, nil
 }

@@ -1,6 +1,10 @@
 package config
 
-import "time"
+import (
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
 
 const (
 	defaultBuddyCreditsPatrolInterval           = 12 * time.Hour
@@ -67,4 +71,68 @@ func (c *BuddyCreditsPatrolConfig) Normalize() {
 	if c.RequestTimeout <= 0 {
 		c.RequestTimeout = defaultBuddyCreditsPatrolRequestTimeout
 	}
+}
+
+type buddyCreditsPatrolYAML struct {
+	Enabled            *bool     `yaml:"enabled"`
+	Interval           yaml.Node `yaml:"interval"`
+	StartupJitter      yaml.Node `yaml:"startup-jitter"`
+	MinAccountInterval yaml.Node `yaml:"min-account-interval"`
+	AccountJitter      yaml.Node `yaml:"account-jitter"`
+	MinRemain          *float64  `yaml:"min-remain"`
+	RequestTimeout     yaml.Node `yaml:"request-timeout"`
+}
+
+func (c *BuddyCreditsPatrolConfig) UnmarshalYAML(value *yaml.Node) error {
+	if c == nil || value == nil {
+		return nil
+	}
+	var raw buddyCreditsPatrolYAML
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	if raw.Enabled != nil {
+		c.Enabled = *raw.Enabled
+	}
+	if d, ok, err := parseYAMLDurationNode(&raw.Interval); err != nil {
+		return err
+	} else if ok {
+		c.Interval = d
+	}
+	if d, ok, err := parseYAMLDurationNode(&raw.StartupJitter); err != nil {
+		return err
+	} else if ok {
+		c.StartupJitter = d
+	}
+	if d, ok, err := parseYAMLDurationNode(&raw.MinAccountInterval); err != nil {
+		return err
+	} else if ok {
+		c.MinAccountInterval = d
+	}
+	if d, ok, err := parseYAMLDurationNode(&raw.AccountJitter); err != nil {
+		return err
+	} else if ok {
+		c.AccountJitter = d
+	}
+	if raw.MinRemain != nil {
+		c.MinRemain = *raw.MinRemain
+	}
+	if d, ok, err := parseYAMLDurationNode(&raw.RequestTimeout); err != nil {
+		return err
+	} else if ok {
+		c.RequestTimeout = d
+	}
+	return nil
+}
+
+func (c BuddyCreditsPatrolConfig) MarshalYAML() (interface{}, error) {
+	return map[string]interface{}{
+		"enabled":              c.Enabled,
+		"interval":             formatYAMLDuration(c.Interval),
+		"startup-jitter":       formatYAMLDuration(c.StartupJitter),
+		"min-account-interval": formatYAMLDuration(c.MinAccountInterval),
+		"account-jitter":       formatYAMLDuration(c.AccountJitter),
+		"min-remain":           c.MinRemain,
+		"request-timeout":      formatYAMLDuration(c.RequestTimeout),
+	}, nil
 }

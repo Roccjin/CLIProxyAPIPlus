@@ -127,6 +127,12 @@ func TestRunRound_ReenablesWhenCreditsRemain(t *testing.T) {
 	if _, exists := got.Metadata[cliproxyauth.MetadataKeyDisabledReason]; exists {
 		t.Fatalf("disabled_reason not cleared: %#v", got.Metadata[cliproxyauth.MetadataKeyDisabledReason])
 	}
+	if got.Metadata[cliproxyauth.MetadataKeyCreditsPatrolResult] != cliproxyauth.CreditsPatrolResultReenabled {
+		t.Fatalf("patrol result = %#v", got.Metadata[cliproxyauth.MetadataKeyCreditsPatrolResult])
+	}
+	if _, ok := got.Metadata[cliproxyauth.MetadataKeyCreditsPatrolAt]; !ok {
+		t.Fatal("missing credits_patrol_at after re-enable")
+	}
 }
 
 func TestRunRound_KeepsDisabledWhenEmpty(t *testing.T) {

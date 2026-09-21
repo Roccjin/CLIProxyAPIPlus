@@ -220,6 +220,8 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/qoder-quota", s.mgmt.GetQoderQuota)
 		mgmt.GET("/codebuddy-quota", s.mgmt.GetCodeBuddyQuota)
 		mgmt.GET("/workbuddy-quota", s.mgmt.GetWorkBuddyQuota)
+		mgmt.GET("/buddy-patrol", s.mgmt.GetBuddyPatrol)
+		mgmt.PATCH("/buddy-patrol", s.mgmt.PatchBuddyPatrol)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 		mgmt.DELETE("/oauth-session", s.mgmt.CancelAuthSession)
 	}

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -68,5 +69,33 @@ func TestBuddyCreditsPatrolConfigNormalize(t *testing.T) {
 	}
 	if cfg.AccountJitter != 0 || cfg.MinRemain != 0 {
 		t.Fatalf("normalized jitter/remain = %+v", cfg)
+	}
+}
+
+func TestBuddyCreditsPatrolConfig_YAMLRoundTripDurationStrings(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("port: 8317\nbuddy-credits-patrol:\n  enabled: true\n  interval: 12h\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := LoadConfigOptional(path, false)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	cfg.BuddyCreditsPatrol.Interval = 6 * time.Hour
+	if err := SaveConfigPreserveComments(path, cfg); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(data), "interval: 6h") {
+		t.Fatalf("saved yaml missing 6h interval:\n%s", data)
+	}
+	if strings.Contains(string(data), "21600000000000") {
+		t.Fatalf("saved yaml used nanoseconds:\n%s", data)
 	}
 }

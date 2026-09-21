@@ -245,6 +245,7 @@ func (p *CreditsPatrol) inspect(ctx context.Context, auth *cliproxyauth.Auth, se
 			log.Warnf("buddy credits patrol: re-enable failed auth_id=%s: %v", auth.ID, errEnable)
 			return patrolResultContinue
 		}
+		p.stampPatrol(ctx, auth, cliproxyauth.CreditsPatrolResultReenabled, remain)
 		log.Infof("buddy credits patrol: re-enabled auth_id=%s provider=%s remain=%.2f", auth.ID, auth.Provider, remain)
 		return patrolResultContinue
 	}
@@ -268,9 +269,6 @@ func (p *CreditsPatrol) reenable(ctx context.Context, auth *cliproxyauth.Auth) e
 	delete(auth.Metadata, cliproxyauth.MetadataKeyDisabledReason)
 	delete(auth.Metadata, cliproxyauth.MetadataKeyDisabledProviderCode)
 	delete(auth.Metadata, cliproxyauth.MetadataKeyDisabledAt)
-	delete(auth.Metadata, cliproxyauth.MetadataKeyCreditsPatrolAt)
-	delete(auth.Metadata, cliproxyauth.MetadataKeyCreditsPatrolResult)
-	delete(auth.Metadata, cliproxyauth.MetadataKeyCreditsPatrolRemain)
 	_, err := p.store.Update(ctx, auth)
 	return err
 }
