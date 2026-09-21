@@ -12,10 +12,10 @@ const (
 	defaultBuddyActivityPatrolStartupJitter      = 10 * time.Minute
 	defaultBuddyActivityPatrolMinAccountInterval = 45 * time.Second
 	defaultBuddyActivityPatrolAccountJitter      = 30 * time.Second
-	defaultBuddyActivityPatrolRequestTimeout     = 90 * time.Second
-	// DefaultBuddyActivityPatrolModel is the cheap CodeBuddy international
-	// model used for the daily CLI activity ping.
-	DefaultBuddyActivityPatrolModel = "hy3"
+	defaultBuddyActivityPatrolRequestTimeout     = 180 * time.Second
+	// DefaultBuddyActivityPatrolModel is the model on the official CLI
+	// conversation that qualifies for the daily activity gift.
+	DefaultBuddyActivityPatrolModel = "deepseek-v4.1-flash"
 )
 
 // BuddyActivityPatrolConfig controls the background loop that sends one
@@ -32,9 +32,10 @@ type BuddyActivityPatrolConfig struct {
 	MinAccountInterval time.Duration `yaml:"min-account-interval" json:"min-account-interval"`
 	// AccountJitter is extra random delay added after MinAccountInterval. Default 30s.
 	AccountJitter time.Duration `yaml:"account-jitter" json:"account-jitter"`
-	// RequestTimeout bounds one account's report+chat+report sequence. Default 90s.
+	// RequestTimeout bounds one account's report+chat+report sequence. Default 180s.
 	RequestTimeout time.Duration `yaml:"request-timeout" json:"request-timeout"`
-	// Model is the chat model used for the ping. Default hy3.
+	// Model is the chat model used for the ping. Default deepseek-v4.1-flash.
+	// The previous stub model hy3 is rewritten to that default.
 	Model string `yaml:"model" json:"model"`
 }
 
@@ -72,7 +73,8 @@ func (c *BuddyActivityPatrolConfig) Normalize() {
 	if c.RequestTimeout <= 0 {
 		c.RequestTimeout = defaultBuddyActivityPatrolRequestTimeout
 	}
-	if strings.TrimSpace(c.Model) == "" {
+	model := strings.TrimSpace(c.Model)
+	if model == "" || strings.EqualFold(model, "hy3") {
 		c.Model = DefaultBuddyActivityPatrolModel
 	}
 }

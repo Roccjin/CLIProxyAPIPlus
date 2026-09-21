@@ -18,13 +18,11 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 const (
 	codeBuddyReportPath          = "/v2/report"
-	codeBuddyActivityUserPrompt  = "hi"
-	codeBuddyActivityMaxTokens   = 32
+	codeBuddyActivityMaxTokens   = 128000
 	codeBuddyActivityReportDelay = 2000
 )
 
@@ -39,8 +37,9 @@ type CodeBuddyActivityPingResult struct {
 }
 
 // PingCodeBuddyDailyActivity sends the official CLI activity chain against
-// www.codebuddy.ai: /v2/report (send) -> /v2/chat/completions -> /v2/report (response).
-// It never targets WorkBuddy or the CN gateway.
+// www.codebuddy.ai: plugin start, login, /v2/report send, gzipped
+// /v2/chat/completions, then the response reports. It never targets WorkBuddy
+// or the CN gateway.
 func PingCodeBuddyDailyActivity(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config, model string) (*CodeBuddyActivityPingResult, error) {
 	if auth == nil {
 		return nil, fmt.Errorf("codebuddy: missing auth")
@@ -72,31 +71,55 @@ func pingCodeBuddyDailyActivity(ctx context.Context, auth *cliproxyauth.Auth, cf
 		return nil, fmt.Errorf("codebuddy: missing activity API base")
 	}
 
+	model = resolveCodeBuddyActivityModel(model)
 	machineID := ensureCodeBuddyCLIMachineID(auth)
 	sessionID := uuid.NewString()
-	ids := newCodeBuddyChatIDs()
-	fp := codeBuddyCLIFingerprint(userID, codeBuddyActivityUsername(auth), machineID, sessionID)
+	wire, err := newCodeBuddyCLIWire()
+	if err != nil {
+		return nil, err
+	}
+	ids := wire.codeBuddyChatIDs
+	fp := codeBuddyActivityFingerprint(userID, codeBuddyActivityUsername(auth), machineID, sessionID)
 	now := time.Now().UnixMilli()
 
-	sendEvents := []map[string]any{
-		codeBuddyChatRequestSendEvent(fp, ids, model, now, len(codeBuddyActivityUserPrompt)),
-		codeBuddyChatMessageSendEvent(fp, ids, model, now+1),
+	if err = postCodeBuddyReport(ctx, auth, cfg, apiBase, accessToken, userID, domain, []map[string]any{
+		codeBuddyPluginStartEvent(fp, now),
+	}); err != nil {
+		return nil, err
 	}
-	if err := postCodeBuddyReport(ctx, auth, cfg, apiBase, accessToken, userID, domain, sendEvents); err != nil {
+	if err = postCodeBuddyReport(ctx, auth, cfg, apiBase, accessToken, userID, domain, []map[string]any{
+		codeBuddyLoginEvent(fp, now+1),
+	}); err != nil {
 		return nil, err
 	}
 
-	usage, finishReason, err := postCodeBuddyActivityChat(ctx, auth, cfg, apiBase, accessToken, userID, domain, ids, model)
+	payload, inputLength, err := buildCodeBuddyActivityChatPayload(model, domain)
+	if err != nil {
+		return nil, err
+	}
+	sendAt := time.Now().UnixMilli()
+	sendEvents := []map[string]any{
+		codeBuddyChatRequestSendEvent(fp, ids, model, sendAt, inputLength),
+		codeBuddyChatMessageSendEvent(fp, ids, model, sendAt+1),
+	}
+	if err = postCodeBuddyReport(ctx, auth, cfg, apiBase, accessToken, userID, domain, sendEvents); err != nil {
+		return nil, err
+	}
+
+	usage, finishReason, err := postCodeBuddyActivityChat(ctx, auth, cfg, apiBase, accessToken, userID, domain, wire, payload)
 	if err != nil {
 		return nil, err
 	}
 	doneAt := time.Now().UnixMilli()
-	responseEvents := []map[string]any{
+	if err = postCodeBuddyReport(ctx, auth, cfg, apiBase, accessToken, userID, domain, []map[string]any{
 		codeBuddyChatMessageResponseEvent(fp, ids, model, doneAt, usage, finishReason, true),
 		codeBuddyChatMessageStatusEvent(fp, ids, model, doneAt+1),
-		codeBuddyChatRequestResponseEvent(fp, ids, model, doneAt+2, usage, finishReason, true),
+	}); err != nil {
+		return nil, err
 	}
-	if err := postCodeBuddyReport(ctx, auth, cfg, apiBase, accessToken, userID, domain, responseEvents); err != nil {
+	if err = postCodeBuddyReport(ctx, auth, cfg, apiBase, accessToken, userID, domain, []map[string]any{
+		codeBuddyChatRequestResponseEvent(fp, ids, model, doneAt+2, usage, finishReason, true),
+	}); err != nil {
 		return nil, err
 	}
 	return &CodeBuddyActivityPingResult{
@@ -244,6 +267,10 @@ func codeBuddyChatRequestSendEvent(fp map[string]any, ids codeBuddyChatIDs, mode
 		"skillId":               "",
 		"skillCount":            0,
 		"totalCount":            0,
+		"vcsType":               "unknown",
+		"vcsRepo":               "",
+		"vcsBranchName":         "",
+		"vcsRevId":              "",
 		"presentAt":             now,
 		"traceId":               ids.TraceID,
 		"rootRequestId":         ids.ConversationRequestID,
@@ -294,6 +321,7 @@ func codeBuddyChatMessageResponseEvent(fp map[string]any, ids codeBuddyChatIDs, 
 		"isSuccessful":         ok,
 		"messageErrorCode":     "",
 		"finishReason":         finishReason,
+		"firstTokenAt":         now,
 		"presentAt":            now,
 		"traceId":              ids.TraceID,
 		"rootRequestId":        ids.ConversationRequestID,
@@ -409,24 +437,23 @@ func postCodeBuddyReport(ctx context.Context, auth *cliproxyauth.Auth, cfg *conf
 	return nil
 }
 
-func postCodeBuddyActivityChat(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config, apiBase, accessToken, userID, domain string, ids codeBuddyChatIDs, model string) (codeBuddyActivityUsage, string, error) {
+func postCodeBuddyActivityChat(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config, apiBase, accessToken, userID, domain string, wire codeBuddyCLIWire, payload []byte) (codeBuddyActivityUsage, string, error) {
 	var empty codeBuddyActivityUsage
-	payload, err := buildCodeBuddyActivityChatPayload(model, domain)
+	gzipped, err := gzipBody(payload)
 	if err != nil {
 		return empty, "", err
 	}
 	url := apiBase + codeBuddyChatPath
 	httpClient := newProxyAwareHTTPClient(ctx, cfg, auth, 0)
-	exec := NewCodeBuddyExecutor(cfg)
 
 	var lastErr error
 	for attempt := 0; attempt <= codeBuddyTransientProviderRetries; attempt++ {
-		httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+		httpReq, errReq := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(gzipped))
 		if errReq != nil {
 			return empty, "", errReq
 		}
-		exec.applyHeadersWithIDs(httpReq, accessToken, userID, domain, ids)
-		httpReq.Header.Set("Cache-Control", "no-cache")
+		applyCodeBuddyCLIActivityHeaders(httpReq, accessToken, userID, domain, wire)
+		httpReq.Header.Set("Content-Encoding", "gzip")
 
 		httpResp, errDo := httpClient.Do(httpReq)
 		if errDo != nil {
@@ -484,26 +511,47 @@ func postCodeBuddyActivityChat(ctx context.Context, auth *cliproxyauth.Auth, cfg
 	return empty, "", lastErr
 }
 
-func buildCodeBuddyActivityChatPayload(model, domain string) ([]byte, error) {
-	raw := []byte(`{}`)
-	var err error
-	raw, err = sjson.SetBytes(raw, "model", model)
+func buildCodeBuddyActivityChatPayload(model, domain string) ([]byte, int, error) {
+	model = resolveCodeBuddyActivityModel(model)
+	system, parts := codeBuddyActivityUserParts(time.Now())
+	content := make([]map[string]string, 0, len(parts))
+	for _, part := range parts {
+		content = append(content, map[string]string{"type": "text", "text": part})
+	}
+	messages, err := marshalJSONNoHTML([]any{
+		map[string]any{"role": "system", "content": system},
+		map[string]any{"role": "user", "content": content},
+	})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	messages := []map[string]string{
-		{"role": "system", "content": codeBuddyDefaultSystemPrompt},
-		{"role": "user", "content": codeBuddyActivityUserPrompt},
-	}
-	raw, err = sjson.SetBytes(raw, "messages", messages)
+	body, err := marshalJSONNoHTML(struct {
+		Model            string          `json:"model"`
+		Messages         json.RawMessage `json:"messages"`
+		Tools            json.RawMessage `json:"tools"`
+		Temperature      int             `json:"temperature"`
+		MaxTokens        int             `json:"max_tokens"`
+		Stream           bool            `json:"stream"`
+		StreamOptions    map[string]any  `json:"stream_options"`
+		ReasoningEffort  string          `json:"reasoning_effort"`
+		Verbosity        string          `json:"verbosity"`
+		ReasoningSummary string          `json:"reasoning_summary"`
+	}{
+		Model:            model,
+		Messages:         messages,
+		Tools:            json.RawMessage(codeBuddyCLIToolsJSON),
+		Temperature:      1,
+		MaxTokens:        codeBuddyActivityMaxTokens,
+		Stream:           true,
+		StreamOptions:    map[string]any{"include_usage": true},
+		ReasoningEffort:  codeBuddyCLIReasoningEffort,
+		Verbosity:        codeBuddyCLIVerbosity,
+		ReasoningSummary: codeBuddyDefaultReasoningSummary,
+	})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	raw, err = sjson.SetBytes(raw, "max_tokens", codeBuddyActivityMaxTokens)
-	if err != nil {
-		return nil, err
-	}
-	return prepareCodeBuddyChatPayload(raw, domain), nil
+	return prepareCodeBuddyChatPayload(body, domain), codeBuddyActivityInputLength(parts), nil
 }
 
 func truncateActivityError(body []byte) string {

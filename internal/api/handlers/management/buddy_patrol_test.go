@@ -79,7 +79,7 @@ func TestGetBuddyPatrol_DefaultsAndAccounts(t *testing.T) {
 		t.Fatalf("credits = %#v", credits)
 	}
 	activity, _ := payload["activity"].(map[string]any)
-	if activity["enabled"] != true || activity["interval"] != "24h" || activity["model"] != "hy3" {
+	if activity["enabled"] != true || activity["interval"] != "24h" || activity["model"] != "deepseek-v4.1-flash" {
 		t.Fatalf("activity = %#v", activity)
 	}
 	accounts, _ := payload["accounts"].([]any)
@@ -141,7 +141,7 @@ func TestPatchBuddyPatrol_UpdatesSettings(t *testing.T) {
 	if cfg.BuddyActivityPatrol.Interval != 12*time.Hour {
 		t.Fatalf("activity interval = %s", cfg.BuddyActivityPatrol.Interval)
 	}
-	if cfg.BuddyActivityPatrol.Model != "hy3" {
+	if cfg.BuddyActivityPatrol.Model != "deepseek-v4.1-flash" {
 		t.Fatalf("model = %q", cfg.BuddyActivityPatrol.Model)
 	}
 }

@@ -178,8 +178,8 @@ func (p *ActivityPatrol) inspect(ctx context.Context, auth *cliproxyauth.Auth, s
 		return patrolResultContinue
 	}
 	timeout := settings.RequestTimeout
-	if timeout <= 0 {
-		timeout = 90 * time.Second
+	if timeout < 3*time.Minute {
+		timeout = 3 * time.Minute
 	}
 	pingCtx, cancel := context.WithTimeout(ctx, timeout)
 	err := p.ping(pingCtx, auth, settings.Model)

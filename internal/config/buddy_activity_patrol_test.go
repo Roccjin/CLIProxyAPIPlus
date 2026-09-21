@@ -30,7 +30,7 @@ func TestLoadConfigOptional_BuddyActivityPatrolDefaultsOn(t *testing.T) {
 	if cfg.BuddyActivityPatrol.Model != DefaultBuddyActivityPatrolModel {
 		t.Fatalf("model = %q, want %q", cfg.BuddyActivityPatrol.Model, DefaultBuddyActivityPatrolModel)
 	}
-	if cfg.BuddyActivityPatrol.RequestTimeout != 90*time.Second {
+	if cfg.BuddyActivityPatrol.RequestTimeout != 180*time.Second {
 		t.Fatalf("request-timeout = %s", cfg.BuddyActivityPatrol.RequestTimeout)
 	}
 }
@@ -69,7 +69,7 @@ func TestBuddyActivityPatrolConfigNormalize(t *testing.T) {
 	if cfg.Enabled {
 		t.Fatal("Normalize must not turn patrol on")
 	}
-	if cfg.Interval != 24*time.Hour || cfg.MinAccountInterval != 45*time.Second || cfg.RequestTimeout != 90*time.Second {
+	if cfg.Interval != 24*time.Hour || cfg.MinAccountInterval != 45*time.Second || cfg.RequestTimeout != 180*time.Second {
 		t.Fatalf("normalized durations = %+v", cfg)
 	}
 	if cfg.AccountJitter != 0 {
