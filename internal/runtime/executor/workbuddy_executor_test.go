@@ -2,7 +2,9 @@ package executor
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -83,17 +85,26 @@ func TestWorkBuddyApplyHeaders_InternationalShape(t *testing.T) {
 	if got := req.Header.Get("User-Agent"); got != workbuddy.UserAgentChatGlobal {
 		t.Errorf("User-Agent = %s, want %s", got, workbuddy.UserAgentChatGlobal)
 	}
-	if got := req.Header.Get("Origin"); got != "https://www.workbuddy.ai" {
-		t.Errorf("Origin = %s", got)
+	if got := req.Header.Get("User-Agent"); strings.Contains(got, "WorkBuddy AI/") {
+		t.Errorf("User-Agent = %s, desktop chat does not use the WorkBuddy AI token", got)
 	}
-	if got := req.Header.Get("Referer"); got != "https://www.workbuddy.ai/" {
-		t.Errorf("Referer = %s", got)
+	if req.Header.Get("Origin") != "" || req.Header.Get("Referer") != "" {
+		t.Errorf("desktop chat sent Origin/Referer: %q %q", req.Header.Get("Origin"), req.Header.Get("Referer"))
 	}
-	if got := req.Header.Get("Accept-Language"); got != "en-US" {
-		t.Errorf("Accept-Language = %s", got)
+	if req.Header.Get("Accept-Language") != "" || req.Header.Get("X-No-Enterprise-Id") != "" {
+		t.Errorf("desktop chat sent browser billing headers: lang=%q enterprise=%q", req.Header.Get("Accept-Language"), req.Header.Get("X-No-Enterprise-Id"))
 	}
-	if got := req.Header.Get("X-No-Enterprise-Id"); got != "1" {
-		t.Errorf("X-No-Enterprise-Id = %s", got)
+	if got := req.Header.Get("x-stainless-runtime-version"); got != workBuddyStainlessRuntimeVersion {
+		t.Errorf("stainless runtime = %s", got)
+	}
+	if got := req.Header.Get("x-stainless-os"); got != "Windows" {
+		t.Errorf("stainless os = %s", got)
+	}
+	if !strings.HasPrefix(req.Header.Get("traceparent"), "00-") || !strings.Contains(req.Header.Get("b3"), "-1-") {
+		t.Errorf("trace headers traceparent=%s b3=%s", req.Header.Get("traceparent"), req.Header.Get("b3"))
+	}
+	if req.Header.Get("X-Trace-Id") == "" || req.Header.Get("acp-connection-id") == "" {
+		t.Fatal("expected desktop trace and acp connection ids")
 	}
 	if got := req.Header.Get("X-Product"); got != workbuddy.IDEType {
 		t.Errorf("X-Product = %s", got)
@@ -145,6 +156,54 @@ func TestIsWorkBuddyAccountRiskControl(t *testing.T) {
 	}
 	if isWorkBuddyAccountRiskControl(http.StatusInternalServerError, []byte(`{"type":"error","code":"11134"}`)) {
 		t.Fatal("11134 is not account risk control")
+	}
+}
+
+func TestDoWorkBuddyChat_GlobalDesktopBody(t *testing.T) {
+	var gotEncoding string
+	var raw []byte
+	var conversationID string
+	ctx := context.WithValue(t.Context(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		gotEncoding = req.Header.Get("Content-Encoding")
+		conversationID = req.Header.Get("X-Conversation-ID")
+		compressed, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+		}
+		zr, err := gzip.NewReader(bytes.NewReader(compressed))
+		if err != nil {
+			t.Errorf("gzip: %v", err)
+			raw = compressed
+		} else {
+			raw, _ = io.ReadAll(zr)
+			_ = zr.Close()
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader("data: [DONE]\n")),
+		}, nil
+	}))
+
+	exec := NewWorkBuddyExecutor(nil)
+	_, err := exec.doWorkBuddyChat(ctx, &cliproxyauth.Auth{ID: "wb-1"}, "token", "user-1", workbuddy.DefaultDomainGlobal, []byte(`{"model":"gpt-6.1-sol","messages":[{"role":"user","content":"hi"}]}`), "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotEncoding != "gzip" {
+		t.Fatalf("Content-Encoding = %q", gotEncoding)
+	}
+	event := gjson.GetBytes(raw, "extra_vars.growthEvent").String()
+	var parsed []map[string]any
+	if err := json.Unmarshal([]byte(event), &parsed); err != nil {
+		t.Fatalf("growthEvent %q: %v", event, err)
+	}
+	if len(parsed) != 1 || parsed[0]["eventCode"] != "chat_request_send" || parsed[0]["id"] != conversationID {
+		t.Fatalf("growthEvent = %#v, conversation %s", parsed, conversationID)
+	}
+	extra, _ := parsed[0]["extra"].(map[string]any)
+	if extra["requestModelId"] != "gpt-6.1-sol" || extra["mode"] != "craft" {
+		t.Fatalf("extra = %#v", extra)
 	}
 }
 

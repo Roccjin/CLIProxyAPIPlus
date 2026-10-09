@@ -92,8 +92,11 @@ func TestUserAgentForChat(t *testing.T) {
 	if got := UserAgentForChat("www.workbuddy.ai"); got != UserAgentChatGlobal {
 		t.Fatalf("global chat UA = %q, want %q", got, UserAgentChatGlobal)
 	}
-	if !strings.Contains(UserAgentChatGlobal, "WorkBuddy AI/") {
-		t.Fatalf("global chat UA %q missing WorkBuddy AI platform segment", UserAgentChatGlobal)
+	if UserAgentChatGlobal != UserAgentChatCN {
+		t.Fatalf("global chat UA = %q, want desktop UA %q", UserAgentChatGlobal, UserAgentChatCN)
+	}
+	if strings.Contains(UserAgentChatGlobal, "WorkBuddy AI/") || strings.Contains(UserAgentChatGlobal, "workbuddy-ai/") {
+		t.Fatalf("global chat UA %q still uses the Electron/auth token", UserAgentChatGlobal)
 	}
 	if got := UserAgentForChat("www.workbuddy.cn"); got != UserAgentChatCN {
 		t.Fatalf("cn chat UA = %q, want %q", got, UserAgentChatCN)

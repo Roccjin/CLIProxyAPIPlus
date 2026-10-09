@@ -23,12 +23,13 @@ const (
 	AppVersion = "5.5.2"
 	CLIVersion = "2.137.1"
 
-	// Chat UA is the official desktop RestOperations shape:
-	// WorkBuddy/<ver> <platform>/<ver> CLI/<cliVer>.
-	// International chat must use platform "WorkBuddy AI"; sending "WorkBuddy"
-	// on www.workbuddy.ai can trip upstream 403/11140 "request illegal".
+	// Chat UA is the desktop RestOperations shape captured from WorkBuddyAI 5.5.2
+	// on www.workbuddy.ai: WorkBuddy/<ver> WorkBuddy/<ver> CLI/<cliVer>.
+	// The Electron shell and the auth-refresh client use workbuddy-ai; the
+	// chat call does not. An older build inserted "WorkBuddy AI" into the
+	// chat UA to dodge 11140, which no longer matches the desktop client.
 	UserAgentChatCN     = "WorkBuddy/" + AppVersion + " WorkBuddy/" + AppVersion + " CLI/" + CLIVersion
-	UserAgentChatGlobal = "WorkBuddy/" + AppVersion + " WorkBuddy AI/" + AppVersion + " CLI/" + CLIVersion
+	UserAgentChatGlobal = UserAgentChatCN
 	UserAgentChat       = UserAgentChatCN
 	UserAgentAuthCN     = UserAgentChatCN
 	UserAgentAuthIntl   = "workbuddy-ai/" + AppVersion + " workbuddy-ai/" + AppVersion + " CLI/" + CLIVersion

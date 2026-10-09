@@ -194,6 +194,7 @@ func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, s
 	}
 	s.syncBuddyCreditsPatrol()
 	s.syncBuddyActivityPatrol()
+	s.syncWorkBuddyWebDaily()
 	return ctx.Err() == nil
 }
 

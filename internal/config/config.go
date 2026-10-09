@@ -85,6 +85,10 @@ type Config struct {
 	// activity gift pack can settle. Default on.
 	BuddyActivityPatrol BuddyActivityPatrolConfig `yaml:"buddy-activity-patrol" json:"buddy-activity-patrol"`
 
+	// WorkBuddyWebDaily opens one international WorkBuddy web conversation per
+	// credential each day and drives it until the session is completed. Default on.
+	WorkBuddyWebDaily WorkBuddyWebDailyConfig `yaml:"workbuddy-web-daily" json:"workbuddy-web-daily"`
+
 	// RequestRetry defines the retry times when the request failed.
 	RequestRetry int `yaml:"request-retry" json:"request-retry"`
 	// MaxRetryCredentials defines the maximum number of credentials to try for a failed request.

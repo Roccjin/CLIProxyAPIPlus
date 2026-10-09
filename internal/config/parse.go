@@ -39,6 +39,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.CredentialInFlight = DefaultCredentialInFlightConfig()
 	cfg.BuddyCreditsPatrol = DefaultBuddyCreditsPatrolConfig()
 	cfg.BuddyActivityPatrol = DefaultBuddyActivityPatrolConfig()
+	cfg.WorkBuddyWebDaily = DefaultWorkBuddyWebDailyConfig()
 
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config payload: %w", err)
@@ -92,6 +93,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 
 	cfg.BuddyCreditsPatrol.Normalize()
 	cfg.BuddyActivityPatrol.Normalize()
+	cfg.WorkBuddyWebDaily.Normalize()
 
 	cfg.NormalizePluginsConfig()
 	if errResolvePluginsDir := cfg.ResolvePluginsDir(); errResolvePluginsDir != nil && cfg.Plugins.Enabled {

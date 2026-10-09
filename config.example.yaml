@@ -226,6 +226,21 @@ buddy-activity-patrol:
   request-timeout: 180s
   model: deepseek-v4.1-flash
 
+# Open one www.workbuddy.ai web conversation per international WorkBuddy
+# credential and drive the sandbox turn until status is completed.
+# A desktop /v2/chat/completions ping does not settle this reward.
+# Skips CN WorkBuddy, disabled, and plugin-virtual auths.
+# Records workbuddy_web_daily_at only after the conversation completes.
+# Default: enabled, 24h rounds, model deepseek-v4.1-flash. Set enabled: false to disable.
+workbuddy-web-daily:
+  enabled: true
+  interval: 24h
+  startup-jitter: 10m
+  min-account-interval: 45s
+  account-jitter: 30s
+  request-timeout: 180s
+  model: deepseek-v4.1-flash
+
 # Quota exceeded behavior
 quota-exceeded:
   switch-project: true # Whether to automatically switch to another project when a quota is exceeded

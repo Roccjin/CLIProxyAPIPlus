@@ -129,6 +129,10 @@ const (
 	MetadataKeyActivityPatrolResult = "activity_patrol_result"
 	// MetadataKeyCLIMachineID is a stable per-credential CodeBuddy CLI machine id.
 	MetadataKeyCLIMachineID = "cli_machine_id"
+	// MetadataKeyWorkBuddyWebDailyAt records when a WorkBuddy web daily conversation last settled.
+	MetadataKeyWorkBuddyWebDailyAt = "workbuddy_web_daily_at"
+	// MetadataKeyWorkBuddyWebDailyResult records the last web daily outcome.
+	MetadataKeyWorkBuddyWebDailyResult = "workbuddy_web_daily_result"
 )
 
 const (
@@ -136,6 +140,11 @@ const (
 	ActivityPatrolResultAuthInvalid  = "auth_invalid"
 	ActivityPatrolResultCreditsEmpty = "credits_exhausted"
 	ActivityPatrolResultFailed       = "failed"
+)
+
+const (
+	WorkBuddyWebDailyResultOK          = "ok"
+	WorkBuddyWebDailyResultAuthInvalid = "auth_invalid"
 )
 
 const (

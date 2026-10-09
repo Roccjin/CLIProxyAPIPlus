@@ -42,8 +42,10 @@ type buddyPatrolAccountView struct {
 	DisabledReason   string               `json:"disabled_reason,omitempty"`
 	Region           string               `json:"region,omitempty"`
 	ActivityEligible bool                 `json:"activity_eligible"`
+	WebDailyEligible bool                 `json:"web_daily_eligible"`
 	Credits          *buddyPatrolLastView `json:"credits,omitempty"`
 	Activity         *buddyPatrolLastView `json:"activity,omitempty"`
+	WebDaily         *buddyPatrolLastView `json:"web_daily,omitempty"`
 }
 
 type buddyPatrolPatchFields struct {
@@ -60,6 +62,7 @@ type buddyPatrolPatchFields struct {
 type buddyPatrolPatchBody struct {
 	Credits  *buddyPatrolPatchFields `json:"credits"`
 	Activity *buddyPatrolPatchFields `json:"activity"`
+	WebDaily *buddyPatrolPatchFields `json:"web-daily"`
 }
 
 func (h *Handler) GetBuddyPatrol(c *gin.Context) {
@@ -80,8 +83,8 @@ func (h *Handler) PatchBuddyPatrol(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	if body.Credits == nil && body.Activity == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "credits or activity is required"})
+	if body.Credits == nil && body.Activity == nil && body.WebDaily == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "credits, activity, or web-daily is required"})
 		return
 	}
 	if err := applyBuddyPatrolPatch(h.cfg, body); err != nil {
@@ -96,6 +99,8 @@ func (h *Handler) buddyPatrolSnapshot() gin.H {
 	credits.Normalize()
 	activity := h.cfg.BuddyActivityPatrol
 	activity.Normalize()
+	webDaily := h.cfg.WorkBuddyWebDaily
+	webDaily.Normalize()
 	return gin.H{
 		"home-mode": h.cfg.Home.Enabled,
 		"credits": buddyPatrolSettingsView{
@@ -115,6 +120,15 @@ func (h *Handler) buddyPatrolSnapshot() gin.H {
 			AccountJitter:      formatPatrolDuration(activity.AccountJitter),
 			RequestTimeout:     formatPatrolDuration(activity.RequestTimeout),
 			Model:              activity.Model,
+		},
+		"web-daily": buddyPatrolSettingsView{
+			Enabled:            webDaily.Enabled,
+			Interval:           formatPatrolDuration(webDaily.Interval),
+			StartupJitter:      formatPatrolDuration(webDaily.StartupJitter),
+			MinAccountInterval: formatPatrolDuration(webDaily.MinAccountInterval),
+			AccountJitter:      formatPatrolDuration(webDaily.AccountJitter),
+			RequestTimeout:     formatPatrolDuration(webDaily.RequestTimeout),
+			Model:              webDaily.Model,
 		},
 		"accounts": h.buddyPatrolAccounts(),
 	}
@@ -180,12 +194,16 @@ func buddyPatrolAccountFromAuth(auth *coreauth.Auth) (buddyPatrolAccountView, bo
 		DisabledReason:   authMetadataString(auth, coreauth.MetadataKeyDisabledReason),
 		Region:           region,
 		ActivityEligible: provider == "codebuddy" && codebuddy.IsGlobalDomain(domain),
+		WebDailyEligible: provider == "workbuddy" && workbuddy.IsGlobalDomain(domain),
 	}
 	if credits := buddyPatrolCreditsView(auth); credits != nil {
 		view.Credits = credits
 	}
 	if activity := buddyPatrolActivityView(auth); activity != nil {
 		view.Activity = activity
+	}
+	if webDaily := buddyPatrolWebDailyView(auth); webDaily != nil {
+		view.WebDaily = webDaily
 	}
 	return view, true
 }
@@ -214,6 +232,15 @@ func buddyPatrolActivityView(auth *coreauth.Auth) *buddyPatrolLastView {
 	return &buddyPatrolLastView{At: at, Result: result}
 }
 
+func buddyPatrolWebDailyView(auth *coreauth.Auth) *buddyPatrolLastView {
+	at := authMetadataString(auth, coreauth.MetadataKeyWorkBuddyWebDailyAt)
+	result := authMetadataString(auth, coreauth.MetadataKeyWorkBuddyWebDailyResult)
+	if at == "" && result == "" {
+		return nil
+	}
+	return &buddyPatrolLastView{At: at, Result: result}
+}
+
 func applyBuddyPatrolPatch(cfg *config.Config, body buddyPatrolPatchBody) error {
 	if cfg == nil {
 		return fmt.Errorf("config unavailable")
@@ -228,8 +255,14 @@ func applyBuddyPatrolPatch(cfg *config.Config, body buddyPatrolPatchBody) error 
 			return err
 		}
 	}
+	if body.WebDaily != nil {
+		if err := applyWebDailyPatch(&cfg.WorkBuddyWebDaily, body.WebDaily); err != nil {
+			return err
+		}
+	}
 	cfg.BuddyCreditsPatrol.Normalize()
 	cfg.BuddyActivityPatrol.Normalize()
+	cfg.WorkBuddyWebDaily.Normalize()
 	return nil
 }
 
@@ -285,6 +318,58 @@ func applyCreditsPatrolPatch(cfg *config.BuddyCreditsPatrolConfig, patch *buddyP
 }
 
 func applyActivityPatrolPatch(cfg *config.BuddyActivityPatrolConfig, patch *buddyPatrolPatchFields) error {
+	if cfg == nil || patch == nil {
+		return nil
+	}
+	if patch.Enabled != nil {
+		cfg.Enabled = *patch.Enabled
+	}
+	if patch.Interval != nil {
+		d, err := parseRequiredPatrolDuration("interval", *patch.Interval)
+		if err != nil {
+			return err
+		}
+		cfg.Interval = d
+	}
+	if patch.StartupJitter != nil {
+		d, err := parseOptionalPatrolDuration("startup-jitter", *patch.StartupJitter)
+		if err != nil {
+			return err
+		}
+		cfg.StartupJitter = d
+	}
+	if patch.MinAccountInterval != nil {
+		d, err := parseRequiredPatrolDuration("min-account-interval", *patch.MinAccountInterval)
+		if err != nil {
+			return err
+		}
+		cfg.MinAccountInterval = d
+	}
+	if patch.AccountJitter != nil {
+		d, err := parseOptionalPatrolDuration("account-jitter", *patch.AccountJitter)
+		if err != nil {
+			return err
+		}
+		cfg.AccountJitter = d
+	}
+	if patch.RequestTimeout != nil {
+		d, err := parseRequiredPatrolDuration("request-timeout", *patch.RequestTimeout)
+		if err != nil {
+			return err
+		}
+		cfg.RequestTimeout = d
+	}
+	if patch.Model != nil {
+		model := strings.TrimSpace(*patch.Model)
+		if model == "" {
+			return fmt.Errorf("model must not be empty")
+		}
+		cfg.Model = model
+	}
+	return nil
+}
+
+func applyWebDailyPatch(cfg *config.WorkBuddyWebDailyConfig, patch *buddyPatrolPatchFields) error {
 	if cfg == nil || patch == nil {
 		return nil
 	}

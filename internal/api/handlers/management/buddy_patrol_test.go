@@ -21,6 +21,7 @@ func TestGetBuddyPatrol_DefaultsAndAccounts(t *testing.T) {
 	cfg := &config.Config{
 		BuddyCreditsPatrol:  config.DefaultBuddyCreditsPatrolConfig(),
 		BuddyActivityPatrol: config.DefaultBuddyActivityPatrolConfig(),
+		WorkBuddyWebDaily:   config.DefaultWorkBuddyWebDailyConfig(),
 	}
 	cb := &coreauth.Auth{
 		ID:       "cb-" + uuid.NewString(),
@@ -44,9 +45,11 @@ func TestGetBuddyPatrol_DefaultsAndAccounts(t *testing.T) {
 		Provider: "workbuddy",
 		FileName: "bob.json",
 		Metadata: map[string]any{
-			"email":  "bob@example.com",
-			"domain": "www.workbuddy.ai",
-			"type":   "workbuddy",
+			"email":                                 "bob@example.com",
+			"domain":                                "www.workbuddy.ai",
+			"type":                                  "workbuddy",
+			coreauth.MetadataKeyWorkBuddyWebDailyAt: "2026-10-08T10:00:00Z",
+			coreauth.MetadataKeyWorkBuddyWebDailyResult: coreauth.WorkBuddyWebDailyResultOK,
 		},
 	}
 	other := &coreauth.Auth{
@@ -82,34 +85,50 @@ func TestGetBuddyPatrol_DefaultsAndAccounts(t *testing.T) {
 	if activity["enabled"] != true || activity["interval"] != "24h" || activity["model"] != "deepseek-v4.1-flash" {
 		t.Fatalf("activity = %#v", activity)
 	}
+	webDaily, _ := payload["web-daily"].(map[string]any)
+	if webDaily["enabled"] != true || webDaily["interval"] != "24h" || webDaily["model"] != "deepseek-v4.1-flash" {
+		t.Fatalf("web-daily = %#v", webDaily)
+	}
 	accounts, _ := payload["accounts"].([]any)
 	if len(accounts) != 2 {
 		t.Fatalf("accounts = %#v", accounts)
 	}
-	var sawAlice bool
+	var sawAlice, sawBob bool
 	for _, raw := range accounts {
 		row, _ := raw.(map[string]any)
-		if row["email"] != "alice@example.com" {
-			continue
-		}
-		sawAlice = true
-		if row["activity_eligible"] != true || row["region"] != "global" {
-			t.Fatalf("alice = %#v", row)
-		}
-		creditsLast, _ := row["credits"].(map[string]any)
-		if creditsLast["result"] != coreauth.CreditsPatrolResultStillEmpty {
-			t.Fatalf("alice credits = %#v", creditsLast)
-		}
-		if creditsLast["remain"] != float64(0) {
-			t.Fatalf("alice remain = %#v", creditsLast["remain"])
-		}
-		activityLast, _ := row["activity"].(map[string]any)
-		if activityLast["result"] != coreauth.ActivityPatrolResultOK {
-			t.Fatalf("alice activity = %#v", activityLast)
+		switch row["email"] {
+		case "alice@example.com":
+			sawAlice = true
+			if row["activity_eligible"] != true || row["web_daily_eligible"] != false || row["region"] != "global" {
+				t.Fatalf("alice = %#v", row)
+			}
+			creditsLast, _ := row["credits"].(map[string]any)
+			if creditsLast["result"] != coreauth.CreditsPatrolResultStillEmpty {
+				t.Fatalf("alice credits = %#v", creditsLast)
+			}
+			if creditsLast["remain"] != float64(0) {
+				t.Fatalf("alice remain = %#v", creditsLast["remain"])
+			}
+			activityLast, _ := row["activity"].(map[string]any)
+			if activityLast["result"] != coreauth.ActivityPatrolResultOK {
+				t.Fatalf("alice activity = %#v", activityLast)
+			}
+		case "bob@example.com":
+			sawBob = true
+			if row["web_daily_eligible"] != true || row["activity_eligible"] != false {
+				t.Fatalf("bob = %#v", row)
+			}
+			webLast, _ := row["web_daily"].(map[string]any)
+			if webLast["result"] != coreauth.WorkBuddyWebDailyResultOK {
+				t.Fatalf("bob web daily = %#v", webLast)
+			}
 		}
 	}
 	if !sawAlice {
 		t.Fatal("missing alice account")
+	}
+	if !sawBob {
+		t.Fatal("missing bob account")
 	}
 }
 
@@ -143,6 +162,38 @@ func TestPatchBuddyPatrol_UpdatesSettings(t *testing.T) {
 	}
 	if cfg.BuddyActivityPatrol.Model != "deepseek-v4.1-flash" {
 		t.Fatalf("model = %q", cfg.BuddyActivityPatrol.Model)
+	}
+}
+
+func TestPatchBuddyPatrol_UpdatesWebDaily(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := &config.Config{
+		WorkBuddyWebDaily: config.DefaultWorkBuddyWebDailyConfig(),
+	}
+	h := &Handler{cfg: cfg, configFilePath: writeTestConfigFile(t)}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	body := `{"web-daily":{"enabled":false,"interval":"12h","min-account-interval":"30s","model":"hy3"}}`
+	c.Request = httptest.NewRequest(http.MethodPatch, "/v0/management/buddy-patrol", strings.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.PatchBuddyPatrol(c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if cfg.WorkBuddyWebDaily.Enabled {
+		t.Fatal("web daily still enabled")
+	}
+	if cfg.WorkBuddyWebDaily.Interval != 12*time.Hour {
+		t.Fatalf("interval = %s", cfg.WorkBuddyWebDaily.Interval)
+	}
+	if cfg.WorkBuddyWebDaily.MinAccountInterval != 30*time.Second {
+		t.Fatalf("min account interval = %s", cfg.WorkBuddyWebDaily.MinAccountInterval)
+	}
+	if cfg.WorkBuddyWebDaily.Model != "hy3" {
+		t.Fatalf("model = %q", cfg.WorkBuddyWebDaily.Model)
 	}
 }
 

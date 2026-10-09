@@ -3,6 +3,7 @@ package executor
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/workbuddy"
@@ -37,6 +39,15 @@ const (
 	workBuddyTransientRetryBaseDelay  = 400 * time.Millisecond
 	workBuddyTransientRetryMaxDelay   = 2 * time.Second
 	workBuddyQuotaRetryAfterMax       = 30 * time.Second
+
+	// Desktop chat fingerprint from WorkBuddyAI 5.5.2 (www.workbuddy.ai).
+	// CodeBuddy's activity patrol uses Node v24; this desktop build uses v22.
+	workBuddyStainlessArch           = "x64"
+	workBuddyStainlessLang           = "js"
+	workBuddyStainlessOS             = "Windows"
+	workBuddyStainlessPackage        = "6.25.0"
+	workBuddyStainlessRuntime        = "node"
+	workBuddyStainlessRuntimeVersion = "v22.21.1"
 )
 
 // Official CLI chat bodies only send these fields. Open WebUI and similar
@@ -359,14 +370,29 @@ func (e *WorkBuddyExecutor) doWorkBuddyChat(ctx context.Context, auth *cliproxya
 		authType, authValue = auth.AccountInfo()
 	}
 
+	wireBody := body
+	global := workbuddy.IsGlobalDomain(domain)
+	if global {
+		body = applyWorkBuddyGrowthEvent(body, conversationID)
+		gzipped, errGzip := gzipWorkBuddyBody(body)
+		if errGzip != nil {
+			return nil, errGzip
+		}
+		wireBody = gzipped
+	}
+
 	var lastErr error
 	for attempt := 0; attempt <= workBuddyTransientProviderRetries; attempt++ {
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(wireBody))
 		if err != nil {
 			return nil, err
 		}
 		e.applyWorkBuddyHeaders(httpReq, accessToken, userID, domain, conversationID)
-		httpReq.Header.Set("Cache-Control", "no-cache")
+		if global {
+			httpReq.Header.Set("Content-Encoding", "gzip")
+		} else {
+			httpReq.Header.Set("Cache-Control", "no-cache")
+		}
 		if attempt == 0 {
 			recordAPIRequest(ctx, e.cfg, upstreamRequestLog{
 				URL:       url,
@@ -788,17 +814,21 @@ func (e *WorkBuddyExecutor) applyHeaders(req *http.Request, accessToken, userID,
 func (e *WorkBuddyExecutor) applyWorkBuddyHeaders(req *http.Request, accessToken, userID, domain, conversationID string) {
 	requestID := strings.ReplaceAll(uuid.NewString(), "-", "")
 	conversationRequestID := strings.ReplaceAll(uuid.NewString(), "-", "")
-	origin := workbuddy.OriginForDomain(domain)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Accept-Language", workbuddy.AcceptLanguageForDomain(domain))
 	req.Header.Set("User-Agent", workbuddy.UserAgentForChat(domain))
-	req.Header.Set("Origin", origin)
-	req.Header.Set("Referer", origin+"/")
 	req.Header.Set("X-User-Id", userID)
 	req.Header.Set("X-Domain", domain)
-	req.Header.Set("X-No-Enterprise-Id", "1")
+	if workbuddy.IsGlobalDomain(domain) {
+		applyWorkBuddyDesktopTrace(req, conversationID)
+	} else {
+		origin := workbuddy.OriginForDomain(domain)
+		req.Header.Set("Accept-Language", workbuddy.AcceptLanguageForDomain(domain))
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Referer", origin+"/")
+		req.Header.Set("X-No-Enterprise-Id", "1")
+	}
 	req.Header.Set("X-Product", workbuddy.IDEType)
 	req.Header.Set("X-IDE-Type", workbuddy.IDEType)
 	req.Header.Set("X-IDE-Name", workbuddy.IDEType)
@@ -814,6 +844,125 @@ func (e *WorkBuddyExecutor) applyWorkBuddyHeaders(req *http.Request, accessToken
 	req.Header.Set("X-Conversation-Request-ID", conversationRequestID)
 	req.Header.Set("X-Conversation-Message-ID", requestID)
 	req.Header.Set("X-Root-Request-ID", conversationRequestID)
+}
+
+// applyWorkBuddyDesktopTrace adds the tracing and Stainless headers the
+// WorkBuddyAI desktop sends on www.workbuddy.ai chat completions.
+func applyWorkBuddyDesktopTrace(req *http.Request, conversationID string) {
+	if req == nil {
+		return
+	}
+	traceID, errTrace := randomHex(16)
+	spanID, errSpan := randomHex(8)
+	parentID, errParent := randomHex(8)
+	if errTrace != nil || errSpan != nil || errParent != nil {
+		return
+	}
+	req.Header.Set("x-stainless-arch", workBuddyStainlessArch)
+	req.Header.Set("x-stainless-lang", workBuddyStainlessLang)
+	req.Header.Set("x-stainless-os", workBuddyStainlessOS)
+	req.Header.Set("x-stainless-package-version", workBuddyStainlessPackage)
+	req.Header.Set("x-stainless-retry-count", "0")
+	req.Header.Set("x-stainless-runtime", workBuddyStainlessRuntime)
+	req.Header.Set("x-stainless-runtime-version", workBuddyStainlessRuntimeVersion)
+	req.Header.Set("traceparent", fmt.Sprintf("00-%s-%s-01", traceID, spanID))
+	req.Header.Set("b3", fmt.Sprintf("%s-%s-1-%s", traceID, spanID, parentID))
+	req.Header.Set("X-B3-TraceId", traceID)
+	req.Header.Set("X-B3-SpanId", spanID)
+	req.Header.Set("X-B3-ParentSpanId", parentID)
+	req.Header.Set("X-B3-Sampled", "1")
+	req.Header.Set("X-Trace-Id", traceID)
+	acp := uuid.NewSHA1(workBuddyConversationNamespace, []byte("acp:"+workBuddyConversationUUID(conversationID)))
+	req.Header.Set("acp-connection-id", acp.String())
+}
+
+func gzipWorkBuddyBody(raw []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	zw, err := gzip.NewWriterLevel(&buf, gzip.DefaultCompression)
+	if err != nil {
+		return nil, fmt.Errorf("workbuddy: gzip chat: %w", err)
+	}
+	if _, err = zw.Write(raw); err != nil {
+		return nil, fmt.Errorf("workbuddy: gzip chat: %w", err)
+	}
+	if err = zw.Close(); err != nil {
+		return nil, fmt.Errorf("workbuddy: gzip chat: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// applyWorkBuddyGrowthEvent attaches the desktop extra_vars.growthEvent.
+// The value is a JSON string, and its id matches X-Conversation-ID.
+func applyWorkBuddyGrowthEvent(payload []byte, conversationID string) []byte {
+	if !gjson.ValidBytes(payload) {
+		return payload
+	}
+	model := strings.TrimSpace(gjson.GetBytes(payload, "model").String())
+	event := []map[string]any{{
+		"eventCode": "chat_request_send",
+		"id":        workBuddyConversationUUID(conversationID),
+		"extra": map[string]any{
+			"inputLength":      workBuddyInputLength(payload),
+			"requestModelId":   model,
+			"requestModelName": workBuddyModelDisplayName(model),
+			"mode":             "craft",
+			"command":          "",
+		},
+	}}
+	raw, err := json.Marshal(event)
+	if err != nil {
+		return payload
+	}
+	out, err := sjson.SetBytes(payload, "extra_vars.growthEvent", string(raw))
+	if err != nil {
+		return payload
+	}
+	return out
+}
+
+func workBuddyInputLength(payload []byte) int {
+	messages := gjson.GetBytes(payload, "messages")
+	if !messages.IsArray() {
+		return 0
+	}
+	n := 0
+	for _, msg := range messages.Array() {
+		n += workBuddyContentRunes(msg.Get("content"))
+	}
+	return n
+}
+
+func workBuddyContentRunes(content gjson.Result) int {
+	if content.Type == gjson.String {
+		return utf8.RuneCountInString(content.String())
+	}
+	if !content.IsArray() {
+		return 0
+	}
+	n := 0
+	for _, part := range content.Array() {
+		if part.Type == gjson.String {
+			n += utf8.RuneCountInString(part.String())
+			continue
+		}
+		n += utf8.RuneCountInString(part.Get("text").String())
+	}
+	return n
+}
+
+func workBuddyModelDisplayName(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return model
+	}
+	parts := strings.Split(model, "-")
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(part[:1]) + part[1:]
+	}
+	return strings.Join(parts, "-")
 }
 
 func lookupWorkBuddyModelInfo(modelID string) *registry.ModelInfo {

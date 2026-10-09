@@ -98,6 +98,9 @@ type Service struct {
 	activityPatrolMu     sync.Mutex
 	activityPatrolCancel context.CancelFunc
 
+	webDailyMu     sync.Mutex
+	webDailyCancel context.CancelFunc
+
 	// pluginHost owns dynamic plugin lifecycle and runtime capability adapters.
 	pluginHost *pluginhost.Host
 

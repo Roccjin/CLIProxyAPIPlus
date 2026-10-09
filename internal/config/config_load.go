@@ -40,6 +40,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 					CredentialInFlight:  DefaultCredentialInFlightConfig(),
 					BuddyCreditsPatrol:  DefaultBuddyCreditsPatrolConfig(),
 					BuddyActivityPatrol: DefaultBuddyActivityPatrolConfig(),
+					WorkBuddyWebDaily:   DefaultWorkBuddyWebDailyConfig(),
 				}
 				cfg.NormalizePluginsConfig()
 				return cfg, nil
@@ -54,6 +55,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 			CredentialInFlight:  DefaultCredentialInFlightConfig(),
 			BuddyCreditsPatrol:  DefaultBuddyCreditsPatrolConfig(),
 			BuddyActivityPatrol: DefaultBuddyActivityPatrolConfig(),
+			WorkBuddyWebDaily:   DefaultWorkBuddyWebDailyConfig(),
 		}
 		cfg.NormalizePluginsConfig()
 		return cfg, nil
@@ -65,6 +67,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 				CredentialInFlight:  DefaultCredentialInFlightConfig(),
 				BuddyCreditsPatrol:  DefaultBuddyCreditsPatrolConfig(),
 				BuddyActivityPatrol: DefaultBuddyActivityPatrolConfig(),
+				WorkBuddyWebDaily:   DefaultWorkBuddyWebDailyConfig(),
 			}
 			cfgOptional.NormalizePluginsConfig()
 			return cfgOptional, nil
@@ -92,6 +95,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.CredentialInFlight = DefaultCredentialInFlightConfig()
 	cfg.BuddyCreditsPatrol = DefaultBuddyCreditsPatrolConfig()
 	cfg.BuddyActivityPatrol = DefaultBuddyActivityPatrolConfig()
+	cfg.WorkBuddyWebDaily = DefaultWorkBuddyWebDailyConfig()
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
@@ -99,6 +103,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 				CredentialInFlight:  DefaultCredentialInFlightConfig(),
 				BuddyCreditsPatrol:  DefaultBuddyCreditsPatrolConfig(),
 				BuddyActivityPatrol: DefaultBuddyActivityPatrolConfig(),
+				WorkBuddyWebDaily:   DefaultWorkBuddyWebDailyConfig(),
 			}
 			cfgOptional.NormalizePluginsConfig()
 			return cfgOptional, nil
@@ -162,6 +167,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	cfg.BuddyCreditsPatrol.Normalize()
 	cfg.BuddyActivityPatrol.Normalize()
+	cfg.WorkBuddyWebDaily.Normalize()
 
 	cfg.NormalizePluginsConfig()
 	if errResolvePluginsDir := cfg.ResolvePluginsDir(); errResolvePluginsDir != nil && cfg.Plugins.Enabled {
