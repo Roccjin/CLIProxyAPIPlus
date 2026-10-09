@@ -200,9 +200,15 @@ video-result-auth-cache-ttl: "3h"
 # When > 0, overrides the default worker count (16).
 # auth-auto-refresh-workers: 16
 
-# Re-enable WorkBuddy/CodeBuddy credentials after monthly credits return.
-# Only inspects auths auto-disabled with disabled_reason=credits_exhausted.
-# Uses the billing meter API (never chat). Serial, one account at a time.
+# Re-enable WorkBuddy/CodeBuddy credentials after credits return.
+# Inspects auths auto-disabled with disabled_reason=credits_exhausted or
+# credits_reserve. Uses the billing meter API (never chat). Serial, one
+# account at a time.
+# min-remain defaults to 1: disable only when upstream reports credits
+# exhausted (14018), and re-enable once remain is at least 1.
+# Set min-remain above 1 (for example 10) to park an account after a
+# successful call when total remain is below that floor. Daily activity
+# tasks still run those accounts. Re-enable when remain >= min-remain.
 # Default: enabled, 12h rounds. Set enabled: false to disable.
 buddy-credits-patrol:
   enabled: true
@@ -215,7 +221,8 @@ buddy-credits-patrol:
 
 # Send one official-CLI-shaped chat plus /v2/report events per international
 # CodeBuddy credential so the next-day 30-credit activity gift pack can settle.
-# Skips WorkBuddy, CN CodeBuddy, disabled, and plugin-virtual auths.
+# Skips WorkBuddy, CN CodeBuddy, manually disabled, credits-exhausted, and plugin-virtual auths.
+# Accounts parked for the credit floor (credits_reserve) are still pinged.
 # Default: enabled, 24h rounds, model deepseek-v4.1-flash. Set enabled: false to disable.
 buddy-activity-patrol:
   enabled: true
@@ -229,7 +236,8 @@ buddy-activity-patrol:
 # Open one www.workbuddy.ai web conversation per international WorkBuddy
 # credential and drive the sandbox turn until status is completed.
 # A desktop /v2/chat/completions ping does not settle this reward.
-# Skips CN WorkBuddy, disabled, and plugin-virtual auths.
+# Skips CN WorkBuddy, manually disabled, credits-exhausted, and plugin-virtual auths.
+# Accounts parked for the credit floor (credits_reserve) are still checked in.
 # Records workbuddy_web_daily_at only after the conversation completes.
 # Default: enabled, 24h rounds, model deepseek-v4.1-flash. Set enabled: false to disable.
 workbuddy-web-daily:

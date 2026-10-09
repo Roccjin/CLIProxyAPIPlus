@@ -152,7 +152,7 @@ func (p *ActivityPatrol) selectCandidates(now time.Time, settings config.BuddyAc
 }
 
 func isActivityPatrolCandidate(auth *cliproxyauth.Auth, now time.Time, interval time.Duration) bool {
-	if auth == nil || auth.IsDisabled() || cliproxyauth.IsPluginVirtualAuth(auth) {
+	if !allowsBuddyMaintenance(auth) {
 		return false
 	}
 	if strings.ToLower(strings.TrimSpace(auth.Provider)) != "codebuddy" {

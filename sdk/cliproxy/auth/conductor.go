@@ -150,6 +150,10 @@ type Manager struct {
 	// It is initialized in NewManager; never Load() before first Store().
 	runtimeConfig atomic.Value
 
+	// reserveObserver is notified after a successful execution so the host can
+	// sample Buddy billing without the auth package calling the billing clients.
+	reserveObserver atomic.Value
+
 	// Optional HTTP RoundTripper provider injected by host.
 	rtProvider RoundTripperProvider
 
@@ -183,6 +187,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		providerOffsets:       make(map[string]int),
 		modelPoolOffsets:      make(map[string]int),
 	}
+	manager.reserveObserver.Store(&buddyReserveObserver{})
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})
 	manager.apiKeyModelRouting.Store(&apiKeyModelRoutingSnapshot{config: &internalconfig.Config{}})

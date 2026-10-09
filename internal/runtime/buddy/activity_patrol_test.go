@@ -83,6 +83,26 @@ func TestSelectActivityCandidates_PluginVirtualExcluded(t *testing.T) {
 	}
 }
 
+func TestSelectActivityCandidates_ReserveDisableStillRuns(t *testing.T) {
+	t.Parallel()
+	reserve := globalCodeBuddyAuth("reserve-" + uuid.NewString())
+	reserve.Disabled = true
+	reserve.Status = cliproxyauth.StatusDisabled
+	reserve.Metadata["disabled"] = true
+	reserve.Metadata[cliproxyauth.MetadataKeyDisabledReason] = cliproxyauth.DisabledReasonCreditsReserve
+	exhausted := globalCodeBuddyAuth("empty-" + uuid.NewString())
+	exhausted.Disabled = true
+	exhausted.Status = cliproxyauth.StatusDisabled
+	exhausted.Metadata["disabled"] = true
+	exhausted.Metadata[cliproxyauth.MetadataKeyDisabledReason] = cliproxyauth.DisabledReasonCreditsExhausted
+	if !isActivityPatrolCandidate(reserve, time.Now(), time.Hour) {
+		t.Fatal("credits-reserve auth was skipped")
+	}
+	if isActivityPatrolCandidate(exhausted, time.Now(), time.Hour) {
+		t.Fatal("credits-exhausted auth was selected")
+	}
+}
+
 func TestActivityRunRound_StampsSuccess(t *testing.T) {
 	t.Parallel()
 

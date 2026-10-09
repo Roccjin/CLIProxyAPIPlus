@@ -16,6 +16,7 @@ func (s *Service) syncBuddyCreditsPatrol() {
 
 	s.creditsPatrolMu.Lock()
 	defer s.creditsPatrolMu.Unlock()
+	s.ensureBuddyReserveGuard()
 
 	if s.creditsPatrolCancel != nil {
 		s.creditsPatrolCancel()
@@ -56,6 +57,39 @@ func (s *Service) stopBuddyCreditsPatrol() {
 	if cancel != nil {
 		cancel()
 	}
+}
+
+func (s *Service) ensureBuddyReserveGuard() {
+	if s == nil || s.coreManager == nil {
+		return
+	}
+	if s.buddyReserve == nil {
+		s.buddyReserve = buddy.NewReserveGuard(buddy.ReserveGuardOptions{
+			Store:    s.coreManager,
+			Settings: s.buddyCreditsReserveSettings,
+			FetchQuota: func(fetchCtx context.Context, auth *coreauth.Auth) (float64, error) {
+				s.cfgMu.RLock()
+				current := s.cfg
+				s.cfgMu.RUnlock()
+				return buddy.FetchQuota(fetchCtx, auth, current)
+			},
+		})
+	}
+	s.coreManager.SetBuddyReserveObserver(s.buddyReserve.Observe)
+}
+
+func (s *Service) buddyCreditsReserveSettings() config.BuddyCreditsPatrolConfig {
+	settings := s.buddyCreditsPatrolSettings()
+	if s == nil {
+		return settings
+	}
+	s.cfgMu.RLock()
+	home := s.cfg != nil && s.cfg.Home.Enabled
+	s.cfgMu.RUnlock()
+	if home {
+		settings.Enabled = false
+	}
+	return settings
 }
 
 func (s *Service) buddyCreditsPatrolSettings() config.BuddyCreditsPatrolConfig {

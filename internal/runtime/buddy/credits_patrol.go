@@ -28,8 +28,9 @@ type AuthStore interface {
 	Update(ctx context.Context, auth *cliproxyauth.Auth) (*cliproxyauth.Auth, error)
 }
 
-// CreditsPatrol serially inspects credits-exhausted Buddy credentials and
-// re-enables them when billing reports remaining credits.
+// CreditsPatrol serially inspects Buddy credentials auto-disabled for exhausted
+// credits or for the credit floor, and re-enables them when billing reports
+// remaining credits at or above min-remain.
 type CreditsPatrol struct {
 	store      AuthStore
 	settings   func() config.BuddyCreditsPatrolConfig
@@ -198,7 +199,9 @@ func isCreditsPatrolCandidate(auth *cliproxyauth.Auth, now time.Time, interval t
 	default:
 		return false
 	}
-	if metadataString(auth, cliproxyauth.MetadataKeyDisabledReason) != cliproxyauth.DisabledReasonCreditsExhausted {
+	switch metadataString(auth, cliproxyauth.MetadataKeyDisabledReason) {
+	case cliproxyauth.DisabledReasonCreditsExhausted, cliproxyauth.DisabledReasonCreditsReserve:
+	default:
 		return false
 	}
 	if interval > 0 {
@@ -250,9 +253,55 @@ func (p *CreditsPatrol) inspect(ctx context.Context, auth *cliproxyauth.Auth, se
 		return patrolResultContinue
 	}
 
+	if settings.MinRemain > 1 && remain > 0 {
+		ensureCreditsReserve(auth)
+	} else if remain <= 0 {
+		ensureCreditsExhausted(auth)
+	}
 	p.stampPatrol(ctx, auth, cliproxyauth.CreditsPatrolResultStillEmpty, remain)
-	log.Infof("buddy credits patrol: credits still empty auth_id=%s remain=%.2f", auth.ID, remain)
+	log.Infof("buddy credits patrol: credits below minimum auth_id=%s remain=%.2f min=%.2f", auth.ID, remain, settings.MinRemain)
 	return patrolResultContinue
+}
+
+func ensureCreditsReserve(auth *cliproxyauth.Auth) {
+	if auth == nil {
+		return
+	}
+	reason := metadataString(auth, cliproxyauth.MetadataKeyDisabledReason)
+	if reason != cliproxyauth.DisabledReasonCreditsExhausted && reason != cliproxyauth.DisabledReasonCreditsReserve {
+		return
+	}
+	auth.Disabled = true
+	auth.Status = cliproxyauth.StatusDisabled
+	auth.StatusMessage = cliproxyauth.CreditsReserveStatusMessage(auth.Provider)
+	if auth.Metadata == nil {
+		auth.Metadata = map[string]any{}
+	}
+	auth.Metadata["disabled"] = true
+	auth.Metadata[cliproxyauth.MetadataKeyDisabledReason] = cliproxyauth.DisabledReasonCreditsReserve
+	delete(auth.Metadata, cliproxyauth.MetadataKeyDisabledProviderCode)
+}
+
+func ensureCreditsExhausted(auth *cliproxyauth.Auth) {
+	if auth == nil || metadataString(auth, cliproxyauth.MetadataKeyDisabledReason) != cliproxyauth.DisabledReasonCreditsReserve {
+		return
+	}
+	auth.Disabled = true
+	auth.Status = cliproxyauth.StatusDisabled
+	switch strings.ToLower(strings.TrimSpace(auth.Provider)) {
+	case "workbuddy":
+		auth.StatusMessage = "WorkBuddy credits exhausted"
+	case "codebuddy":
+		auth.StatusMessage = "CodeBuddy credits exhausted"
+	default:
+		auth.StatusMessage = "Credential credits exhausted"
+	}
+	if auth.Metadata == nil {
+		auth.Metadata = map[string]any{}
+	}
+	auth.Metadata["disabled"] = true
+	auth.Metadata[cliproxyauth.MetadataKeyDisabledReason] = cliproxyauth.DisabledReasonCreditsExhausted
+	auth.Metadata[cliproxyauth.MetadataKeyDisabledProviderCode] = "14018"
 }
 
 func (p *CreditsPatrol) reenable(ctx context.Context, auth *cliproxyauth.Auth) error {

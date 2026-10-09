@@ -68,6 +68,26 @@ func TestSelectWebDailyCandidates_OnlyGlobalWorkBuddy(t *testing.T) {
 	}
 }
 
+func TestSelectWebDailyCandidates_ReserveDisableStillRuns(t *testing.T) {
+	t.Parallel()
+	reserve := globalWorkBuddyAuth("reserve-" + uuid.NewString())
+	reserve.Disabled = true
+	reserve.Status = cliproxyauth.StatusDisabled
+	reserve.Metadata["disabled"] = true
+	reserve.Metadata[cliproxyauth.MetadataKeyDisabledReason] = cliproxyauth.DisabledReasonCreditsReserve
+	exhausted := globalWorkBuddyAuth("empty-" + uuid.NewString())
+	exhausted.Disabled = true
+	exhausted.Status = cliproxyauth.StatusDisabled
+	exhausted.Metadata["disabled"] = true
+	exhausted.Metadata[cliproxyauth.MetadataKeyDisabledReason] = cliproxyauth.DisabledReasonCreditsExhausted
+	if !isWebDailyCandidate(reserve, time.Now(), time.Hour) {
+		t.Fatal("credits-reserve auth was skipped")
+	}
+	if isWebDailyCandidate(exhausted, time.Now(), time.Hour) {
+		t.Fatal("credits-exhausted auth was selected")
+	}
+}
+
 func TestWebDailyRound_StampsOnlyCompleted(t *testing.T) {
 	ok := globalWorkBuddyAuth("ok-" + uuid.NewString())
 	pending := globalWorkBuddyAuth("pending-" + uuid.NewString())

@@ -28,7 +28,10 @@ type BuddyCreditsPatrolConfig struct {
 	MinAccountInterval time.Duration `yaml:"min-account-interval" json:"min-account-interval"`
 	// AccountJitter is extra random delay added after MinAccountInterval. Default 30s.
 	AccountJitter time.Duration `yaml:"account-jitter" json:"account-jitter"`
-	// MinRemain is the inclusive remaining-credits threshold for auto re-enable. Default 1.
+	// MinRemain is the inclusive remaining-credits threshold for auto re-enable.
+	// Default 1 disables an auth only after upstream reports credits exhausted.
+	// Values above 1 also park the auth after a successful call when total
+	// remain is below this floor. Activity patrol and web daily still run it.
 	MinRemain float64 `yaml:"min-remain" json:"min-remain"`
 	// RequestTimeout bounds a single quota fetch. Default 45s.
 	RequestTimeout time.Duration `yaml:"request-timeout" json:"request-timeout"`

@@ -67,11 +67,14 @@ func TestSelectCandidates_OnlyCreditsExhaustedBuddy(t *testing.T) {
 		Provider: "workbuddy",
 		Metadata: map[string]any{"type": "workbuddy"},
 	}
+	reserve := exhaustedBuddyAuth("codebuddy", "reserve-"+uuid.NewString())
+	reserve.Metadata[cliproxyauth.MetadataKeyDisabledReason] = cliproxyauth.DisabledReasonCreditsReserve
+	delete(reserve.Metadata, cliproxyauth.MetadataKeyDisabledProviderCode)
 	other := exhaustedBuddyAuth("gemini", "gem-"+uuid.NewString())
 	recent := exhaustedBuddyAuth("workbuddy", "recent-"+uuid.NewString())
 	recent.Metadata[cliproxyauth.MetadataKeyCreditsPatrolAt] = time.Now().UTC().Format(time.RFC3339Nano)
 
-	m := newPatrolManager(t, wb, cb, manual, active, other, recent)
+	m := newPatrolManager(t, wb, cb, manual, active, other, recent, reserve)
 	p := NewCreditsPatrol(CreditsPatrolOptions{
 		Store:    m,
 		Settings: testSettings,
@@ -89,6 +92,9 @@ func TestSelectCandidates_OnlyCreditsExhaustedBuddy(t *testing.T) {
 	}
 	if _, ok := ids[cb.ID]; !ok {
 		t.Fatalf("missing codebuddy candidate")
+	}
+	if _, ok := ids[reserve.ID]; !ok {
+		t.Fatalf("missing credits-reserve candidate")
 	}
 	for _, id := range []string{manual.ID, active.ID, other.ID, recent.ID} {
 		if _, ok := ids[id]; ok {

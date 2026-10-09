@@ -117,6 +117,10 @@ const (
 	MetadataKeyDisabledAt = "disabled_at"
 	// DisabledReasonCreditsExhausted marks disables caused by exhausted credential credits.
 	DisabledReasonCreditsExhausted = "credits_exhausted"
+	// DisabledReasonCreditsReserve marks WorkBuddy/CodeBuddy auths parked because
+	// total remaining credits fell below the configured floor. Normal routing skips
+	// them. Activity patrol and WorkBuddy web daily still may use them.
+	DisabledReasonCreditsReserve = "credits_reserve"
 	// MetadataKeyCreditsPatrolAt records when credits patrol last inspected an auth.
 	MetadataKeyCreditsPatrolAt = "credits_patrol_at"
 	// MetadataKeyCreditsPatrolResult records the last credits-patrol outcome.

@@ -327,10 +327,26 @@ func normalizePersistedDisabledState(auth *Auth, now time.Time) {
 			reason = strings.TrimSpace(raw)
 		}
 	}
-	if reason == DisabledReasonCreditsExhausted {
+	switch reason {
+	case DisabledReasonCreditsExhausted:
 		auth.StatusMessage = creditsExhaustedStatusMessage(auth.Provider)
+	case DisabledReasonCreditsReserve:
+		auth.StatusMessage = CreditsReserveStatusMessage(auth.Provider)
 	}
 	auth.UpdatedAt = now
+}
+
+// CreditsReserveStatusMessage is the stable status text for an auth parked
+// below the configured Buddy credit floor.
+func CreditsReserveStatusMessage(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "workbuddy":
+		return "WorkBuddy credits below reserve"
+	case "codebuddy":
+		return "CodeBuddy credits below reserve"
+	default:
+		return "Credential credits below reserve"
+	}
 }
 
 // clearDisabledStateForEnable clears the disabled flag plus all residual

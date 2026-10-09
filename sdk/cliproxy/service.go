@@ -12,6 +12,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/homeplugins"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/buddy"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/wsrelay"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
@@ -94,6 +95,7 @@ type Service struct {
 
 	creditsPatrolMu     sync.Mutex
 	creditsPatrolCancel context.CancelFunc
+	buddyReserve        *buddy.ReserveGuard
 
 	activityPatrolMu     sync.Mutex
 	activityPatrolCancel context.CancelFunc

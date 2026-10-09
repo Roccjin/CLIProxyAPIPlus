@@ -995,6 +995,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 	}
 
+	if result.Success {
+		m.notifyBuddyReserve(result.AuthID, result.Provider)
+	}
+
 	m.hook.OnResult(ctx, result)
 	m.publishErrorEvent(result, authSnapshot)
 	m.updateSessionAffinity(result)
