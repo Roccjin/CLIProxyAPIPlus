@@ -229,3 +229,26 @@ func TestApplyBuddyPatrolPatch_EmptyModel(t *testing.T) {
 		t.Fatal("expected empty model to fail")
 	}
 }
+
+func TestApplyBuddyPatrolPatch_AtomicOnError(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{
+		BuddyCreditsPatrol:  config.DefaultBuddyCreditsPatrolConfig(),
+		BuddyActivityPatrol: config.DefaultBuddyActivityPatrolConfig(),
+	}
+	sixHours, bad, empty := "6h", "nope", ""
+	// Same section: a valid field before an invalid one must not leak.
+	if err := applyBuddyPatrolPatch(cfg, buddyPatrolPatchBody{Credits: &buddyPatrolPatchFields{Interval: &sixHours, MinAccountInterval: &bad}}); err == nil {
+		t.Fatal("expected invalid min-account-interval to fail")
+	}
+	if cfg.BuddyCreditsPatrol.Interval != 12*time.Hour {
+		t.Fatalf("credits interval leaked = %s", cfg.BuddyCreditsPatrol.Interval)
+	}
+	// Cross section: a valid credits patch must not apply when activity fails.
+	if err := applyBuddyPatrolPatch(cfg, buddyPatrolPatchBody{Credits: &buddyPatrolPatchFields{Interval: &sixHours}, Activity: &buddyPatrolPatchFields{Model: &empty}}); err == nil {
+		t.Fatal("expected empty activity model to fail")
+	}
+	if cfg.BuddyCreditsPatrol.Interval != 12*time.Hour {
+		t.Fatalf("credits interval leaked across sections = %s", cfg.BuddyCreditsPatrol.Interval)
+	}
+}

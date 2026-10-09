@@ -245,24 +245,30 @@ func applyBuddyPatrolPatch(cfg *config.Config, body buddyPatrolPatchBody) error 
 	if cfg == nil {
 		return fmt.Errorf("config unavailable")
 	}
+	credits := cfg.BuddyCreditsPatrol
+	activity := cfg.BuddyActivityPatrol
+	webDaily := cfg.WorkBuddyWebDaily
 	if body.Credits != nil {
-		if err := applyCreditsPatrolPatch(&cfg.BuddyCreditsPatrol, body.Credits); err != nil {
+		if err := applyCreditsPatrolPatch(&credits, body.Credits); err != nil {
 			return err
 		}
 	}
 	if body.Activity != nil {
-		if err := applyActivityPatrolPatch(&cfg.BuddyActivityPatrol, body.Activity); err != nil {
+		if err := applyActivityPatrolPatch(&activity, body.Activity); err != nil {
 			return err
 		}
 	}
 	if body.WebDaily != nil {
-		if err := applyWebDailyPatch(&cfg.WorkBuddyWebDaily, body.WebDaily); err != nil {
+		if err := applyWebDailyPatch(&webDaily, body.WebDaily); err != nil {
 			return err
 		}
 	}
-	cfg.BuddyCreditsPatrol.Normalize()
-	cfg.BuddyActivityPatrol.Normalize()
-	cfg.WorkBuddyWebDaily.Normalize()
+	credits.Normalize()
+	activity.Normalize()
+	webDaily.Normalize()
+	cfg.BuddyCreditsPatrol = credits
+	cfg.BuddyActivityPatrol = activity
+	cfg.WorkBuddyWebDaily = webDaily
 	return nil
 }
 
